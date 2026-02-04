@@ -1,3 +1,96 @@
 {
-  "images": []
+  "images": [
+    {
+      "id": "ba341751e0704394ae648bf156a9b8fe",
+      "filename": "981bb50688d049a1a5f48224a1cfe810.png",
+      "original_filename": "s1.png",
+      "uploaded_at": "2026-02-04T09:55:48.349495",
+      "ocr_text": "bharati vidyapeeth college of engineering, navi mumbai ihis pc githubb department of applied science daktop time table 2025-26_ sem m (even) branch: computer engineering class: fe division: class advisor: prof: m. patil wef: 5/01/2026 recyalle biw diiceld 12.15 davhtime 8.15-9.15 9.15- 10.15 10.15-11.15 11.15 1215 01.00 01.00-02.00 02.00- 03.00 03.00-04.00 04.00- 05.00 fe c 02/c-1 fe c fe \u20ac fe c pyp am-iiiche phy am ii w/s wis monday sbb psd vnp spw{mri gmk spwv mms mms 1208 205 206 1208/chls phy-4 206 w/s fe c fe c fe c fe \u20ac fe \u20ac govgle @hatgpt cholne pcc phy pyp tuesday vnp dvj dvi sdr gmk sdr sbb 113 113 a fe \u20ac fe \u20ac phy sscs 36 pyp che cad wednesday] gmk rsd vnp sdr asv mri ivicrocott #utoc ad phy4 113 113 120b edge zu26 - fe \u20ac fe c fe \u20ac ami che phy am-ii egl am-ii che phy thursday auk mrj gmk spw sys mri sdr sbb gmk vbl chls 113 113 phy 4 chls 120a phy fe \u20ac fe c fe \u20ac fe \u20ac vllc' m-dia bqerexx pcc pyp sscs che egl egl friday iplay(v' shelicui sdr sbb rsd mri vnp gml 113 113 113 saturday viiual studio sklaunchc code eclive chemistry prof:m. r jadhav hlecve physics ptof. mkharmtate progra core loucse prof. raskar applied mathematics-i prot. waghmare engineering workshop prof: m,m, sawarkar indian knoiledge system prol v.jadhae python progra prof: barshe social science and community services prof: deshmukh engineering graphics prof: patil iurbol # # ireleglaliu eng 10.32 pm kks dj ( %) 03-02-2026 r eu 2",
+      "colors": [
+        "white",
+        "beige",
+        "black"
+      ],
+      "image_type": "graphic",
+      "keywords": [
+        "graphic",
+        "payment",
+        "id_card",
+        "code",
+        "landscape"
+      ],
+      "metadata": {
+        "filename": "981bb50688d049a1a5f48224a1cfe810.png",
+        "width": 1366,
+        "height": 768,
+        "format": "PNG",
+        "mode": "RGBA",
+        "aspect_ratio": 1.78,
+        "file_size_bytes": 362299,
+        "file_size_mb": 0.35,
+        "megapixels": 1.05,
+        "orientation": "landscape",
+        "has_exif": false
+      }
+    },
+    {
+      "id": "ac4844a929b543ab8cc11ff2ec329dd4",
+      "filename": "8b1893b9dd1a46e49c54ea6b08a82213.jpg",
+      "original_filename": "s2.jpg",
+      "uploaded_at": "2026-02-04T09:55:49.230114",
+      "ocr_text": "",
+      "colors": [
+        "white",
+        "blue",
+        "pink"
+      ],
+      "image_type": "photo",
+      "keywords": [
+        "photo",
+        "portrait"
+      ],
+      "metadata": {
+        "filename": "8b1893b9dd1a46e49c54ea6b08a82213.jpg",
+        "width": 205,
+        "height": 246,
+        "format": "JPEG",
+        "mode": "RGB",
+        "aspect_ratio": 0.83,
+        "file_size_bytes": 6410,
+        "file_size_mb": 0.01,
+        "megapixels": 0.05,
+        "orientation": "portrait",
+        "has_exif": false
+      }
+    },
+    {
+      "id": "a5aa1b07994b44d584d865f38f612ceb",
+      "filename": "c3c04a5674b34916a0ea88e356ca9fd7.jpg",
+      "original_filename": "s3.jpg",
+      "uploaded_at": "2026-02-04T09:55:50.388386",
+      "ocr_text": "taltal",
+      "colors": [
+        "gray",
+        "black"
+      ],
+      "image_type": "photo",
+      "keywords": [
+        "photo",
+        "landscape"
+      ],
+      "metadata": {
+        "filename": "c3c04a5674b34916a0ea88e356ca9fd7.jpg",
+        "width": 299,
+        "height": 168,
+        "format": "JPEG",
+        "mode": "RGB",
+        "aspect_ratio": 1.78,
+        "file_size_bytes": 5208,
+        "file_size_mb": 0.0,
+        "megapixels": 0.05,
+        "orientation": "landscape",
+        "has_exif": false
+      }
+    }
+  ]
 }

@@ -6,6 +6,9 @@
 // ===== DOM Elements =====
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
+const getStartedBtn = document.getElementById('getStartedBtn');
+const uploadSection = document.querySelector('.upload-section');
+const resultsSection = document.querySelector('.results-section');
 const uploadProgress = document.getElementById('uploadProgress');
 const progressFill = document.getElementById('progressFill');
 const progressText = document.getElementById('progressText');
@@ -33,7 +36,7 @@ let currentImages = [];
 function showToast(message, type = 'info') {
     toastMessage.textContent = message;
     toast.className = 'toast show ' + type;
-    
+
     setTimeout(() => {
         toast.className = 'toast';
     }, 3000);
@@ -64,28 +67,28 @@ function formatFileSize(bytes) {
  */
 async function uploadFiles(files) {
     if (!files || files.length === 0) return;
-    
+
     // Filter valid image files
-    const validFiles = Array.from(files).filter(file => 
+    const validFiles = Array.from(files).filter(file =>
         file.type.startsWith('image/')
     );
-    
+
     if (validFiles.length === 0) {
         showToast('Please select valid image files', 'error');
         return;
     }
-    
+
     // Show progress
     uploadProgress.style.display = 'block';
     progressFill.style.width = '0%';
     progressText.textContent = `Processing ${validFiles.length} image(s)...`;
-    
+
     // Create form data
     const formData = new FormData();
     validFiles.forEach(file => {
         formData.append('files', file);
     });
-    
+
     try {
         // Simulate progress
         let progress = 0;
@@ -95,36 +98,36 @@ async function uploadFiles(files) {
                 progressFill.style.width = progress + '%';
             }
         }, 200);
-        
+
         // Upload files
         const response = await fetch('/api/upload', {
             method: 'POST',
             body: formData
         });
-        
+
         clearInterval(progressInterval);
         progressFill.style.width = '100%';
-        
+
         if (!response.ok) {
             throw new Error('Upload failed');
         }
-        
+
         const result = await response.json();
-        
+
         // Show results
         if (result.uploaded.length > 0) {
             showToast(`Successfully uploaded ${result.uploaded.length} image(s)`, 'success');
             progressText.textContent = 'AI processing complete!';
-            
+
             // Refresh the image list
             loadImages();
         }
-        
+
         if (result.errors.length > 0) {
             console.error('Upload errors:', result.errors);
             showToast(`${result.errors.length} file(s) failed to upload`, 'error');
         }
-        
+
     } catch (error) {
         console.error('Upload error:', error);
         showToast('Upload failed. Please try again.', 'error');
@@ -144,18 +147,18 @@ async function uploadFiles(files) {
  */
 async function searchImages(query = '') {
     try {
-        const url = query 
+        const url = query
             ? `/api/search?q=${encodeURIComponent(query)}`
             : '/api/images';
-        
+
         const response = await fetch(url);
-        
+
         if (!response.ok) {
             throw new Error('Search failed');
         }
-        
+
         const result = await response.json();
-        
+
         // Update UI
         if (query) {
             resultsTitle.textContent = `Results for "${query}"`;
@@ -164,10 +167,15 @@ async function searchImages(query = '') {
             resultsTitle.textContent = 'Your Images';
             currentImages = result.images || [];
         }
-        
+
         resultsCount.textContent = `${currentImages.length} image(s)`;
         renderImages(currentImages, !!query);
-        
+
+		// Auto-scroll to results if searching
+        if (query && currentImages.length > 0) {
+            resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
     } catch (error) {
         console.error('Search error:', error);
         showToast('Search failed. Please try again.', 'error');
@@ -208,7 +216,7 @@ function renderImages(images, showRelevance = false) {
         `;
         return;
     }
-    
+
     resultsGrid.innerHTML = images.map(img => `
         <div class="image-card" data-testid="card-image-${img.id}" onclick="openImage('${img.id}')">
             ${showRelevance && img.relevance ? `<span class="relevance-badge">${img.relevance} pts</span>` : ''}
@@ -218,7 +226,7 @@ function renderImages(images, showRelevance = false) {
                 <div class="image-card-name">${escapeHtml(img.original_filename)}</div>
                 <div class="image-card-tags">
                     ${img.image_type ? `<span class="image-tag type">${escapeHtml(img.image_type)}</span>` : ''}
-                    ${(img.colors || []).slice(0, 2).map(color => 
+                    ${(img.colors || []).slice(0, 2).map(color =>
                         `<span class="image-tag color">${escapeHtml(color)}</span>`
                     ).join('')}
                 </div>
@@ -235,22 +243,22 @@ function renderImages(images, showRelevance = false) {
 function openImage(imageId) {
     const image = currentImages.find(img => img.id === imageId);
     if (!image) return;
-    
+
     modalImage.src = `/uploads/${image.filename}`;
     modalImage.alt = image.original_filename;
-    
+
     modalInfo.innerHTML = `
         <div style="color: var(--text-primary); margin-bottom: 8px;">
             <strong>${escapeHtml(image.original_filename)}</strong>
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
             ${image.image_type ? `<span class="image-tag type">${escapeHtml(image.image_type)}</span>` : ''}
-            ${(image.colors || []).map(color => 
+            ${(image.colors || []).map(color =>
                 `<span class="image-tag color">${escapeHtml(color)}</span>`
             ).join('')}
         </div>
     `;
-    
+
     imageModal.classList.add('active');
 }
 
@@ -264,12 +272,12 @@ async function deleteImage(imageId) {
     if (!confirm('Are you sure you want to delete this image?')) {
         return;
     }
-    
+
     try {
         const response = await fetch(`/api/images/${imageId}`, {
             method: 'DELETE'
         });
-        
+
         if (response.ok) {
             showToast('Image deleted', 'success');
             loadImages();
@@ -331,6 +339,11 @@ searchInput.addEventListener('input', (e) => {
 // Modal close
 modalClose.addEventListener('click', () => {
     imageModal.classList.remove('active');
+});
+
+// Get Started Scroll
+getStartedBtn.addEventListener('click', () => {
+    uploadSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
 imageModal.addEventListener('click', (e) => {
