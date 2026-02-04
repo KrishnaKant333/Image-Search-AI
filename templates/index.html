@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Search AI - Natural Language Image Search</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">🔍</span>
+                <h1>Image Search AI</h1>
+            </div>
+            <p class="tagline">Search your images with natural language</p>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Upload Section -->
+            <section class="upload-section" data-testid="section-upload">
+                <div class="upload-card">
+                    <div class="upload-area" id="dropZone" data-testid="upload-dropzone">
+                        <div class="upload-icon">📁</div>
+                        <h3>Drop images here</h3>
+                        <p>or click to browse</p>
+                        <input type="file" id="fileInput" multiple accept="image/*" data-testid="input-file-upload">
+                    </div>
+                    <div class="upload-info">
+                        <span>Supports: PNG, JPG, JPEG, GIF, BMP, WEBP</span>
+                        <span>Max 16MB per file</span>
+                    </div>
+                </div>
+                <div class="upload-progress" id="uploadProgress" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <p id="progressText">Processing images...</p>
+                </div>
+            </section>
+
+            <!-- Search Section -->
+            <section class="search-section" data-testid="section-search">
+                <div class="search-container">
+                    <div class="search-input-wrapper">
+                        <span class="search-icon">🔍</span>
+                        <input 
+                            type="text" 
+                            id="searchInput" 
+                            placeholder="Try: 'UPI transaction', 'blue shirt', 'college ID card'..."
+                            data-testid="input-search"
+                        >
+                        <button id="searchBtn" class="search-btn" data-testid="button-search">Search</button>
+                    </div>
+                    <div class="search-hints">
+                        <span class="hint-label">Try:</span>
+                        <button class="hint-tag" onclick="searchWithHint('UPI payment')">UPI payment</button>
+                        <button class="hint-tag" onclick="searchWithHint('screenshot')">screenshot</button>
+                        <button class="hint-tag" onclick="searchWithHint('document')">document</button>
+                        <button class="hint-tag" onclick="searchWithHint('blue')">blue</button>
+                        <button class="hint-tag" onclick="searchWithHint('photo')">photo</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section class="results-section" data-testid="section-results">
+                <div class="results-header">
+                    <h2 id="resultsTitle">Your Images</h2>
+                    <span id="resultsCount" class="results-count">0 images</span>
+                </div>
+                <div class="results-grid" id="resultsGrid" data-testid="grid-results">
+                    <!-- Images will be populated here -->
+                    <div class="empty-state" id="emptyState">
+                        <div class="empty-icon">📷</div>
+                        <h3>No images yet</h3>
+                        <p>Upload some images to get started</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Built for AI Hackathon | Powered by OCR & Color Detection</p>
+        </footer>
+    </div>
+
+    <!-- Image Modal -->
+    <div class="modal" id="imageModal" data-testid="modal-image">
+        <div class="modal-content">
+            <button class="modal-close" id="modalClose" data-testid="button-modal-close">&times;</button>
+            <img src="" alt="" id="modalImage">
+            <div class="modal-info" id="modalInfo"></div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast" data-testid="toast-notification">
+        <span id="toastMessage"></span>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
