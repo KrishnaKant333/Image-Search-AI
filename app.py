@@ -137,13 +137,14 @@ def upload_images():
             ext = original_filename.rsplit('.', 1)[1].lower()
             unique_filename = f"{uuid.uuid4().hex}.{ext}"
 
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+            # Use absolute path so OCR and AI pipeline resolve the file regardless of cwd
+            filepath = os.path.abspath(os.path.join(app.config['UPLOAD_FOLDER'], unique_filename))
 
             try:
                 # Save file
                 file.save(filepath)
 
-                # Process with AI
+                # Process with AI (filepath is absolute for consistent resolution)
                 analysis = process_image(filepath, original_filename)
 
                 # Create image record

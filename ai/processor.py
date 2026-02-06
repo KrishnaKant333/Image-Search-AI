@@ -15,6 +15,7 @@ from . import vision
 from . import color
 from . import objects
 from . import scoring
+from . import ocr
 
 
 class ImageProcessor:
@@ -384,92 +385,100 @@ def process_image(filepath: str, filename: str = None) -> Dict[str, Any]:
     - metadata: dict
     
     Args:
-        filepath: Path to the image file
+        filepath: Path to the image file (relative or absolute; normalized to absolute)
         filename: Original filename (optional, for display purposes)
         
     Returns:
         Dictionary with OCR text, colors, type, keywords, and metadata
     """
+    # Normalize to absolute path so OCR and all modules resolve the same file (avoids cwd/path mismatch)
+    filepath = os.path.abspath(os.path.normpath(filepath))
+
+    ocr_text = ""
+    colors_list = ["gray"]
+    image_type = "photo"
+    keywords = []
+    img_metadata = {}
+
     try:
-        # Extract OCR text (placeholder - integrate with your OCR solution)
-        ocr_text = extract_text(filepath)
-        
-        # Use our new AI modules
-        # Get colors (top 3 base colors)
-        colors_list = color.extract_colors(filepath, max_colors=3)
-        
-        # Get image classification tags (returns multiple)
-        tags = vision.classify_image(filepath)
-        
-        # Get object detection hints
-        objects_list = objects.detect_objects(filepath, ocr_text)
-        
-        # Get image metadata (dimensions, format, etc.)
-        img_metadata = get_image_metadata(filepath)
-        
-        # Normalize output to match app.py expectations
-        # Choose primary image type (highest confidence from vision.py)
+        # --- OCR (per-step try/except so pipeline continues on failure) ---
+        try:
+            ocr_text = extract_text(filepath)
+        except Exception as e:
+            print(f"OCR failed for {filepath}: {e}")
+
+        # --- Colors ---
+        try:
+            colors_list = color.extract_colors(filepath, max_colors=3)
+        except Exception as e:
+            print(f"Color extraction failed for {filepath}: {e}")
+
+        # --- Vision / image type ---
+        tags = []
+        try:
+            tags = vision.classify_image(filepath)
+        except Exception as e:
+            print(f"Vision classification failed for {filepath}: {e}")
         image_type = tags[0] if tags else "photo"
-        
-        # Combine tags and objects into keywords
-        keywords = list(set(tags[1:] + objects_list))  # Skip first tag (it's the primary type)
-        
-        # Add OCR-derived keywords
-        content_keywords = detect_content_keywords(filepath, ocr_text)
-        keywords.extend(content_keywords)
-        keywords = list(set(keywords))  # Remove duplicates
-        
+
+        # --- Object detection ---
+        objects_list = []
+        try:
+            objects_list = objects.detect_objects(filepath, ocr_text)
+        except Exception as e:
+            print(f"Object detection failed for {filepath}: {e}")
+
+        # --- Image metadata ---
+        try:
+            img_metadata = get_image_metadata(filepath)
+        except Exception as e:
+            print(f"Metadata failed for {filepath}: {e}")
+
+        # --- Keywords: tags + objects + OCR-derived ---
+        keywords = list(set((tags[1:] if len(tags) > 1 else []) + objects_list))
+        try:
+            content_keywords = detect_content_keywords(filepath, ocr_text)
+            keywords.extend(content_keywords)
+        except Exception as e:
+            print(f"Content keywords failed for {filepath}: {e}")
+        keywords = list(set(keywords))
+
         return {
-            'ocr_text': ocr_text,
-            'colors': colors_list,
-            'image_type': image_type,
-            'keywords': keywords,
-            'metadata': img_metadata
+            "ocr_text": ocr_text,
+            "colors": colors_list,
+            "image_type": image_type,
+            "keywords": keywords,
+            "metadata": img_metadata,
         }
-        
     except Exception as e:
         print(f"Error processing image {filepath}: {e}")
-        # Return safe defaults on error
         return {
-            'ocr_text': '',
-            'colors': ['gray'],
-            'image_type': 'photo',
-            'keywords': [],
-            'metadata': {}
+            "ocr_text": ocr_text,
+            "colors": colors_list,
+            "image_type": image_type,
+            "keywords": keywords,
+            "metadata": img_metadata or {},
         }
 
 
 def extract_text(filepath: str) -> str:
     """
-    Extract text from image using OCR.
-    
-    PLACEHOLDER: Integrate with your preferred OCR solution:
-    - pytesseract (Tesseract OCR)
-    - EasyOCR
-    - Google Cloud Vision API
-    - AWS Textract
-    
+    Extract text from image using EasyOCR (ai/ocr.py).
+
     Args:
-        filepath: Path to image file
-        
+        filepath: Path to image file (relative or absolute; normalized inside)
+
     Returns:
-        Extracted text string
+        Extracted text string, or empty string on failure
     """
     try:
-        # TODO: Integrate with actual OCR solution
-        # Example with pytesseract:
-        # import pytesseract
-        # from PIL import Image
-        # img = Image.open(filepath)
-        # text = pytesseract.image_to_string(img)
-        # return text.strip()
-        
-        # For now, return empty string
-        # The app will still work with color/type/object detection
-        return ""
-        
+        path = os.path.abspath(os.path.normpath(filepath))
+        if not os.path.isfile(path):
+            print(f"OCR skipped: not a file or missing: {path}")
+            return ""
+        return ocr.extract_text(path, preserve_case=False)
     except Exception as e:
-        print(f"OCR error for {filepath}: {e}")
+        print(f"OCR error for {filepath!r}: {e}")
         return ""
 
 

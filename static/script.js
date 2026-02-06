@@ -30,7 +30,7 @@ let currentImages = [];
 
 // ===== Utility Functions =====
 
-/**
+/** 
  * Show toast notification
  */
 function showToast(message, type = 'info') {
@@ -60,6 +60,38 @@ function formatFileSize(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
+async function compressImage(file) {
+    // Skip compression for small files (keeps full quality for docs/screenshots)
+    if (file.size < 500 * 1024) return file;
+
+    const img = await createImageBitmap(file);
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+
+    // OCR-friendly: keep higher resolution so text stays readable (max 2048 on longest side)
+    const MAX = 2048;
+    const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    // High-quality JPEG (0.92) to preserve sharp text edges for OCR; 0.75 caused artifacts
+    return new Promise((resolve) => {
+        canvas.toBlob(
+            (blob) => {
+                resolve(new File([blob], file.name, {
+                    type: "image/jpeg"
+                }));
+            },
+            "image/jpeg",
+            0.92
+        );
+    });
+}
+
+
 // ===== Upload Functions =====
 
 /**
@@ -81,13 +113,16 @@ async function uploadFiles(files) {
     // Show progress
     uploadProgress.style.display = 'block';
     progressFill.style.width = '0%';
-    progressText.textContent = `Processing ${validFiles.length} image(s)...`;
+    progressText.textContent = `Optimizing & processing ${validFiles.length} image(s)...`;
+
 
     // Create form data
     const formData = new FormData();
-    validFiles.forEach(file => {
-        formData.append('files', file);
-    });
+
+    for (const file of validFiles) {
+        const compressedFile = await compressImage(file);
+        formData.append('files', compressedFile);
+    }
 
     try {
         // Simulate progress
