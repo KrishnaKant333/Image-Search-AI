@@ -1,424 +1,311 @@
 """
-Vision Module - Classify image types and detect basic content
-Identifies if an image is a photo, screenshot, document, etc.
-Optimized for web app usage with improved classification and content detection
+Image classification using rule-based heuristics with confidence scoring.
+Returns multiple tags per image based on visual characteristics.
 """
 
 from PIL import Image
-from typing import Dict, List, Tuple, Optional
-from pathlib import Path
-import os
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import numpy as np
+from typing import List, Dict, Tuple
 
 
-def classify_image_type(image_path: str) -> str:
+def classify_image(image_path: str) -> List[str]:
     """
-    Classify an image into categories: photo, screenshot, document, graphic, or other.
-    Uses heuristics based on image properties and content.
-
+    Classify an image into multiple categories using confidence-based scoring.
+    
+    Returns top 2-3 most confident tags to avoid noise while capturing
+    the image's multiple characteristics.
+    
     Args:
         image_path: Path to the image file
-
+        
     Returns:
-        Image type: 'photo', 'screenshot', 'document', 'graphic', or 'other'
-
-    Raises:
-        FileNotFoundError: If image file doesn't exist
-        ValueError: If image file is invalid or corrupted
+        List of classification tags (e.g., ["photo", "screenshot"])
     """
-    # Validate file exists
-    if not Path(image_path).exists():
-        logger.error(f"Image file not found: {image_path}")
-        raise FileNotFoundError(f"Image file not found: {image_path}")
-
     try:
-        image = Image.open(image_path)
-        width, height = image.size
-
-        # Get image format info
-        format_type = image.format or ''
-        filename = os.path.basename(image_path).lower()
-
-        # Check aspect ratio
-        aspect_ratio = width / height if height > 0 else 1
-
-        # Convert to RGB for analysis
-        if image.mode in ('RGBA', 'P'):
-            rgb_image = image.convert('RGB')
-        else:
-            rgb_image = image
-
-        # Sample pixels for analysis (optimize performance)
-        rgb_image = rgb_image.resize((50, 50), Image.Resampling.LANCZOS)
-        pixels = list(rgb_image.getdata())
-
-        # Calculate color statistics
-        r_vals = [p[0] for p in pixels]
-        g_vals = [p[1] for p in pixels]
-        b_vals = [p[2] for p in pixels]
-
-        def variance(vals):
-            if not vals:
-                return 0
-            mean = sum(vals) / len(vals)
-            return sum((x - mean) ** 2 for x in vals) / len(vals)
-
-        avg_variance = (variance(r_vals) + variance(g_vals) + variance(b_vals)) / 3
-
-        # Calculate average brightness
-        avg_brightness = sum(sum(p) / 3 for p in pixels) / len(pixels)
-
-        # Calculate color diversity
-        unique_colors = len(set(pixels))
-        color_diversity = unique_colors / len(pixels)
-
-        # Detect edges (simplified edge detection)
-        def detect_sharp_edges():
-            edges = 0
-            for i in range(len(pixels) - 1):
-                r_diff = abs(pixels[i][0] - pixels[i+1][0])
-                g_diff = abs(pixels[i][1] - pixels[i+1][1])
-                b_diff = abs(pixels[i][2] - pixels[i+1][2])
-                avg_diff = (r_diff + g_diff + b_diff) / 3
-                if avg_diff > 50:
-                    edges += 1
-            return edges / len(pixels)
-
-        edge_density = detect_sharp_edges()
-
-        # Classification heuristics
-
-        # Documents typically have:
-        # - Very high brightness (paper white)
-        # - Portrait orientation or A4-like aspect ratio
-        # - Very low variance (mostly text on white)
-        # - Low color diversity
-        if (avg_brightness > 220 and
-            avg_variance < 1500 and
-            color_diversity < 0.3 and
-            (aspect_ratio < 0.8 or 1.3 < aspect_ratio < 1.5)):
-            logger.info(f"Classified {image_path} as document")
-            return 'document'
-
-        # Screenshots often have:
-        # - High brightness (white backgrounds common in UIs)
-        # - Low to medium color variance (flat UI colors)
-        # - Common screen aspect ratios (16:9, 16:10)
-        # - Sharp edges (UI elements)
-        common_screen_ratios = [16/9, 16/10, 4/3, 3/2]
-        is_screen_ratio = any(abs(aspect_ratio - ratio) < 0.1 for ratio in common_screen_ratios)
-
-        if (avg_brightness > 180 and
-            avg_variance < 3000 and
-            edge_density > 0.15 and
-            is_screen_ratio):
-            logger.info(f"Classified {image_path} as screenshot")
-            return 'screenshot'
-
-        # Graphics/illustrations typically have:
-        # - Low to medium variance
-        # - Flat colors
-        # - Low color diversity (limited palette)
-        if avg_variance < 2500 and color_diversity < 0.4:
-            logger.info(f"Classified {image_path} as graphic")
-            return 'graphic'
-
-        # Photos typically have:
-        # - Higher color variance (natural scenes)
-        # - Higher color diversity
-        # - Common photo aspect ratios
-        common_photo_ratios = [4/3, 3/2, 16/9]
-        is_photo_ratio = any(abs(aspect_ratio - ratio) < 0.1 for ratio in common_photo_ratios)
-
-        if avg_variance > 3000 and color_diversity > 0.4:
-            logger.info(f"Classified {image_path} as photo")
-            return 'photo'
-
-        # Check filename hints as fallback
-        filename_hints = {
-            'screenshot': ['screenshot', 'screen', 'capture', 'snap'],
-            'document': ['doc', 'scan', 'pdf', 'page'],
-            'photo': ['img', 'photo', 'pic', 'dsc', 'jpg', 'jpeg', 'camera'],
-            'graphic': ['icon', 'logo', 'graphic', 'illustration', 'vector']
-        }
-
-        for img_type, hints in filename_hints.items():
-            if any(hint in filename for hint in hints):
-                logger.info(f"Classified {image_path} as {img_type} (filename hint)")
-                return img_type
-
-        logger.info(f"Classified {image_path} as other (no match)")
-        return 'other'
-
+        img = Image.open(image_path)
+        
+        # Convert to RGB if needed
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Calculate confidence scores for each category
+        scores = _calculate_classification_scores(img)
+        
+        # Sort by confidence and take top 2-3 tags
+        # Minimum confidence threshold: 0.3 (30%)
+        MIN_CONFIDENCE = 0.3
+        sorted_tags = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        
+        # Return top tags that meet minimum confidence
+        top_tags = [tag for tag, score in sorted_tags if score >= MIN_CONFIDENCE][:3]
+        
+        # Always return at least one tag (fallback to highest score)
+        if not top_tags:
+            top_tags = [sorted_tags[0][0]]
+        
+        return top_tags
+        
     except Exception as e:
-        logger.error(f"Classification error for {image_path}: {e}")
-        raise ValueError(f"Failed to classify image: {e}")
+        print(f"Error classifying image {image_path}: {e}")
+        return ["photo"]  # Safe fallback
 
 
-def get_image_metadata(image_path: str) -> Dict:
+def _calculate_classification_scores(img: Image.Image) -> Dict[str, float]:
     """
-    Extract comprehensive metadata from an image.
-
-    Args:
-        image_path: Path to the image file
-
+    Calculate confidence scores for each image category.
+    
+    Scores range from 0.0 to 1.0, where higher means more confident.
+    Multiple categories can have high scores (non-exclusive).
+    
     Returns:
-        Dictionary with image metadata including dimensions, format, mode, etc.
-
-    Raises:
-        FileNotFoundError: If image file doesn't exist
-        ValueError: If image file is invalid or corrupted
+        Dictionary mapping category names to confidence scores
     """
-    if not Path(image_path).exists():
-        logger.error(f"Image file not found: {image_path}")
-        raise FileNotFoundError(f"Image file not found: {image_path}")
-
-    try:
-        image = Image.open(image_path)
-        file_stats = Path(image_path).stat()
-
-        metadata = {
-            'filename': os.path.basename(image_path),
-            'width': image.size[0],
-            'height': image.size[1],
-            'format': image.format or 'unknown',
-            'mode': image.mode,
-            'aspect_ratio': round(image.size[0] / image.size[1], 2) if image.size[1] > 0 else 1,
-            'file_size_bytes': file_stats.st_size,
-            'file_size_mb': round(file_stats.st_size / (1024 * 1024), 2),
-            'megapixels': round((image.size[0] * image.size[1]) / 1_000_000, 2),
-            'orientation': 'portrait' if image.size[1] > image.size[0] else 'landscape' if image.size[0] > image.size[1] else 'square'
-        }
-
-        # Add EXIF data if available
-        if hasattr(image, '_getexif') and image._getexif():
-            exif_data = image._getexif()
-            if exif_data:
-                metadata['has_exif'] = True
-                # Add common EXIF tags if present
-                common_tags = {
-                    271: 'camera_make',
-                    272: 'camera_model',
-                    306: 'datetime',
-                    36867: 'datetime_original',
-                }
-                for tag_id, tag_name in common_tags.items():
-                    if tag_id in exif_data:
-                        metadata[tag_name] = exif_data[tag_id]
-        else:
-            metadata['has_exif'] = False
-
-        logger.info(f"Extracted metadata from {image_path}")
-        return metadata
-
-    except Exception as e:
-        logger.error(f"Metadata extraction error for {image_path}: {e}")
-        raise ValueError(f"Failed to extract metadata: {e}")
-
-
-def detect_content_keywords(image_path: str, ocr_text: str = "") -> List[str]:
-    """
-    Generate content keywords based on image analysis and OCR text.
-    Enhanced with more comprehensive pattern detection.
-
-    Args:
-        image_path: Path to the image file
-        ocr_text: Previously extracted OCR text (optional)
-
-    Returns:
-        List of detected content keywords (deduplicated)
-
-    Raises:
-        FileNotFoundError: If image file doesn't exist
-    """
-    if not Path(image_path).exists():
-        logger.error(f"Image file not found: {image_path}")
-        raise FileNotFoundError(f"Image file not found: {image_path}")
-
-    keywords = []
-
-    # Get image type
-    try:
-        image_type = classify_image_type(image_path)
-        keywords.append(image_type)
-    except Exception as e:
-        logger.warning(f"Could not classify image type: {e}")
-
-    # Add keywords from OCR text analysis
-    ocr_lower = ocr_text.lower()
-
-    # Define keyword patterns
-    keyword_patterns = {
-        'payment': ['upi', 'payment', 'transaction', 'paid', 'rupee', 'rs', 'inr', '₹', 'paytm', 'gpay', 'phonepe'],
-        'bill': ['invoice', 'bill', 'receipt', 'order', 'purchase'],
-        'id_card': ['id', 'card', 'identity', 'college', 'university', 'student', 'employee'],
-        'ticket': ['ticket', 'booking', 'flight', 'train', 'bus', 'reservation', 'pnr'],
-        'email': ['email', 'mail', 'inbox', 'subject', 'from:', 'to:', 'gmail', 'outlook'],
-        'chat': ['chat', 'message', 'whatsapp', 'telegram', 'messenger', 'conversation'],
-        'social_media': ['instagram', 'facebook', 'twitter', 'linkedin', 'post', 'tweet', 'story'],
-        'code': ['def ', 'function', 'import', 'class ', 'const ', 'var ', 'let ', '#!/'],
-        'calendar': ['calendar', 'meeting', 'appointment', 'schedule', 'event', 'reminder'],
-        'map': ['map', 'location', 'address', 'directions', 'route', 'navigation'],
-        'weather': ['weather', 'temperature', 'forecast', 'rain', 'sunny', 'cloudy'],
-        'news': ['news', 'article', 'breaking', 'headline', 'press', 'report'],
-        'shopping': ['cart', 'checkout', 'add to cart', 'buy now', 'price', 'product'],
-        'education': ['assignment', 'homework', 'lecture', 'course', 'exam', 'quiz', 'grade'],
-        'medical': ['prescription', 'doctor', 'patient', 'hospital', 'clinic', 'diagnosis', 'medicine'],
-        'financial': ['bank', 'account', 'balance', 'statement', 'credit', 'debit', 'loan'],
-        'travel': ['passport', 'visa', 'boarding', 'departure', 'arrival', 'hotel', 'itinerary'],
-        'food': ['menu', 'order', 'delivery', 'restaurant', 'food', 'recipe', 'ingredients'],
+    width, height = img.size
+    aspect_ratio = width / height if height > 0 else 1.0
+    
+    # Convert to numpy for analysis
+    img_array = np.array(img)
+    
+    # Initialize scores
+    scores = {
+        "photo": 0.0,
+        "screenshot": 0.0,
+        "graphic": 0.0,
+        "diagram": 0.0,
+        "document": 0.0
     }
+    
+    # --- SCREENSHOT DETECTION ---
+    # Screenshots tend to have specific aspect ratios and sharp edges
+    screenshot_score = 0.0
+    
+    # Common screenshot aspect ratios (16:9, 16:10, 4:3, etc.)
+    common_ratios = [16/9, 16/10, 4/3, 3/2, 21/9]
+    ratio_match = any(abs(aspect_ratio - r) < 0.05 or abs(aspect_ratio - 1/r) < 0.05 
+                      for r in common_ratios)
+    if ratio_match:
+        screenshot_score += 0.3
+    
+    # Screenshots often have large uniform regions (UI elements)
+    uniformity = _calculate_uniformity(img_array)
+    if uniformity > 0.3:
+        screenshot_score += 0.4
+    
+    # Sharp edges indicate UI elements
+    edge_sharpness = _calculate_edge_sharpness(img_array)
+    if edge_sharpness > 0.5:
+        screenshot_score += 0.3
+    
+    scores["screenshot"] = min(screenshot_score, 1.0)
+    
+    # --- GRAPHIC/DESIGN DETECTION ---
+    # Graphics have limited color palettes and geometric shapes
+    graphic_score = 0.0
+    
+    unique_colors = _count_unique_colors(img_array)
+    if unique_colors < 50:
+        graphic_score += 0.5  # Very limited palette = graphic
+    elif unique_colors < 200:
+        graphic_score += 0.3
+    
+    # High saturation suggests designed graphics
+    saturation = _calculate_saturation(img_array)
+    if saturation > 0.6:
+        graphic_score += 0.3
+    
+    # Sharp edges also indicate graphics
+    if edge_sharpness > 0.6:
+        graphic_score += 0.2
+    
+    scores["graphic"] = min(graphic_score, 1.0)
+    
+    # --- DIAGRAM DETECTION ---
+    # Diagrams are usually simple, with lines and shapes
+    diagram_score = 0.0
+    
+    # Low color count + high contrast = likely diagram
+    if unique_colors < 30:
+        diagram_score += 0.4
+    
+    # High white/light background percentage
+    light_pixel_ratio = _calculate_light_pixel_ratio(img_array)
+    if light_pixel_ratio > 0.7:
+        diagram_score += 0.3
+    
+    # Sharp edges
+    if edge_sharpness > 0.7:
+        diagram_score += 0.3
+    
+    scores["diagram"] = min(diagram_score, 1.0)
+    
+    # --- DOCUMENT DETECTION ---
+    # Documents are typically portrait, high-contrast, white background
+    document_score = 0.0
+    
+    # Portrait orientation
+    if aspect_ratio < 0.9:  # Taller than wide
+        document_score += 0.3
+    
+    # Very high white background
+    if light_pixel_ratio > 0.8:
+        document_score += 0.4
+    
+    # Low saturation (mostly black text on white)
+    if saturation < 0.2:
+        document_score += 0.3
+    
+    scores["document"] = min(document_score, 1.0)
+    
+    # --- PHOTO DETECTION ---
+    # Photos have natural color variation, organic shapes
+    photo_score = 0.0
+    
+    # Wide range of colors
+    if unique_colors > 500:
+        photo_score += 0.4
+    
+    # Moderate saturation (not too flat, not too vibrant)
+    if 0.3 < saturation < 0.7:
+        photo_score += 0.3
+    
+    # Color variance (natural scenes have gradients)
+    color_variance = _calculate_color_variance(img_array)
+    if color_variance > 0.4:
+        photo_score += 0.3
+    
+    # Photos typically don't have huge uniform regions
+    if uniformity < 0.4:
+        photo_score += 0.2
+    
+    scores["photo"] = min(photo_score, 1.0)
+    
+    return scores
 
-    # Check for pattern matches
-    for category, patterns in keyword_patterns.items():
-        if any(pattern in ocr_lower for pattern in patterns):
-            keywords.append(category)
 
-    # Get image orientation
-    try:
-        metadata = get_image_metadata(image_path)
-        keywords.append(metadata['orientation'])
-    except Exception as e:
-        logger.warning(f"Could not get orientation: {e}")
-
-    # Detect QR codes or barcodes (heuristic)
-    if 'qr' in ocr_lower or 'barcode' in ocr_lower or 'scan' in ocr_lower:
-        keywords.append('qr_code')
-        keywords.append('scannable')
-
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_keywords = []
-    for keyword in keywords:
-        if keyword not in seen:
-            unique_keywords.append(keyword)
-            seen.add(keyword)
-
-    logger.info(f"Detected {len(unique_keywords)} keywords for {image_path}")
-    return unique_keywords
-
-
-def is_likely_meme(image_path: str, ocr_text: str = "") -> bool:
+def _calculate_uniformity(img_array: np.ndarray) -> float:
     """
-    Detect if an image is likely a meme based on characteristics.
-
-    Args:
-        image_path: Path to the image file
-        ocr_text: Previously extracted OCR text
-
-    Returns:
-        True if image appears to be a meme
+    Calculate what percentage of the image is uniform color regions.
+    Returns value between 0.0 and 1.0.
     """
-    try:
-        # Memes often have text overlaid on images
-        if not ocr_text or len(ocr_text.strip()) < 5:
-            return False
-
-        # Get image properties
-        image = Image.open(image_path)
-        width, height = image.size
-
-        # Common meme formats are typically square or near-square
-        aspect_ratio = width / height if height > 0 else 1
-        is_square_ish = 0.8 < aspect_ratio < 1.2
-
-        # Memes are often low resolution
-        is_low_res = width < 800 and height < 800
-
-        # Check for meme-like text patterns
-        text_lower = ocr_text.lower()
-        meme_indicators = [
-            'when', 'me:', 'nobody:', 'everyone:', 'literally',
-            'expectation vs reality', 'vs', 'be like'
-        ]
-        has_meme_text = any(indicator in text_lower for indicator in meme_indicators)
-
-        # Memes often have impact font or text at top/bottom
-        return (is_square_ish or is_low_res) and (has_meme_text or len(ocr_text.split()) < 20)
-
-    except Exception as e:
-        logger.error(f"Meme detection error for {image_path}: {e}")
-        return False
+    # Downsample for performance
+    small = Image.fromarray(img_array).resize((50, 50), Image.Resampling.LANCZOS)
+    small_array = np.array(small)
+    
+    # Calculate standard deviation of each pixel's neighborhood
+    # Low std = uniform region
+    h, w = small_array.shape[:2]
+    uniform_pixels = 0
+    total_pixels = 0
+    
+    for i in range(1, h-1):
+        for j in range(1, w-1):
+            neighborhood = small_array[i-1:i+2, j-1:j+2]
+            std = np.std(neighborhood)
+            if std < 10:  # Very similar colors
+                uniform_pixels += 1
+            total_pixels += 1
+    
+    return uniform_pixels / total_pixels if total_pixels > 0 else 0.0
 
 
-def get_quality_score(image_path: str) -> float:
+def _calculate_edge_sharpness(img_array: np.ndarray) -> float:
     """
-    Calculate a quality score for the image based on resolution and sharpness.
-
-    Args:
-        image_path: Path to the image file
-
-    Returns:
-        Quality score from 0-100
+    Calculate edge sharpness (0.0 = soft/blurry, 1.0 = sharp edges).
     """
-    try:
-        image = Image.open(image_path)
-        width, height = image.size
-
-        # Resolution score (based on megapixels)
-        megapixels = (width * height) / 1_000_000
-        resolution_score = min(megapixels * 10, 50)  # Max 50 points
-
-        # Sharpness score (basic edge detection)
-        if image.mode in ('RGBA', 'P'):
-            rgb_image = image.convert('RGB')
-        else:
-            rgb_image = image
-
-        rgb_image = rgb_image.resize((100, 100), Image.Resampling.LANCZOS)
-        pixels = list(rgb_image.getdata())
-
-        # Calculate edge contrast
-        edges = 0
-        for i in range(len(pixels) - 1):
-            r_diff = abs(pixels[i][0] - pixels[i+1][0])
-            g_diff = abs(pixels[i][1] - pixels[i+1][1])
-            b_diff = abs(pixels[i][2] - pixels[i+1][2])
-            avg_diff = (r_diff + g_diff + b_diff) / 3
-            if avg_diff > 30:
-                edges += 1
-
-        sharpness_score = min((edges / len(pixels)) * 500, 50)  # Max 50 points
-
-        total_score = resolution_score + sharpness_score
-
-        logger.info(f"Quality score for {image_path}: {total_score:.2f}")
-        return round(total_score, 2)
-
-    except Exception as e:
-        logger.error(f"Quality score calculation error for {image_path}: {e}")
-        return 0.0
+    # Convert to grayscale
+    if len(img_array.shape) == 3:
+        gray = np.mean(img_array, axis=2).astype(np.uint8)
+    else:
+        gray = img_array
+    
+    # Simple gradient-based edge detection
+    small = Image.fromarray(gray).resize((100, 100), Image.Resampling.LANCZOS)
+    small_array = np.array(small)
+    
+    # Compute gradients
+    dx = np.abs(np.diff(small_array, axis=1))
+    dy = np.abs(np.diff(small_array, axis=0))
+    
+    # High gradient values = sharp edges
+    edge_strength = (np.mean(dx) + np.mean(dy)) / 2
+    
+    # Normalize to 0-1 range (255 is max possible gradient)
+    return min(edge_strength / 50, 1.0)
 
 
-def batch_classify_images(image_paths: List[str]) -> Dict[str, str]:
+def _count_unique_colors(img_array: np.ndarray, sample_size: int = 10000) -> int:
     """
-    Classify multiple images in batch.
-
-    Args:
-        image_paths: List of image file paths
-
-    Returns:
-        Dictionary mapping image paths to their classifications
+    Count approximate unique colors (sample-based for performance).
     """
-    results = {}
+    h, w = img_array.shape[:2]
+    total_pixels = h * w
+    
+    # Sample pixels if image is large
+    if total_pixels > sample_size:
+        indices = np.random.choice(total_pixels, sample_size, replace=False)
+        flat_img = img_array.reshape(-1, 3)
+        sampled = flat_img[indices]
+    else:
+        sampled = img_array.reshape(-1, 3)
+    
+    # Count unique RGB combinations
+    unique = np.unique(sampled, axis=0)
+    
+    # Scale up if we sampled
+    if total_pixels > sample_size:
+        scaling_factor = total_pixels / sample_size
+        return int(len(unique) * scaling_factor)
+    
+    return len(unique)
 
-    for image_path in image_paths:
-        try:
-            if not Path(image_path).exists():
-                logger.warning(f"Skipping non-existent file: {image_path}")
-                results[image_path] = 'unknown'
-                continue
 
-            classification = classify_image_type(image_path)
-            results[image_path] = classification
+def _calculate_saturation(img_array: np.ndarray) -> float:
+    """
+    Calculate average saturation (0.0 = grayscale, 1.0 = vivid colors).
+    """
+    # Convert to HSV
+    img_pil = Image.fromarray(img_array)
+    hsv = img_pil.convert('HSV')
+    hsv_array = np.array(hsv)
+    
+    # Saturation is the second channel in HSV
+    saturation_channel = hsv_array[:, :, 1]
+    
+    # Normalize to 0-1 range
+    return np.mean(saturation_channel) / 255.0
 
-        except Exception as e:
-            logger.error(f"Batch classification error for {image_path}: {e}")
-            results[image_path] = 'error'
 
-    logger.info(f"Batch classified {len(image_paths)} images")
-    return results
+def _calculate_light_pixel_ratio(img_array: np.ndarray) -> float:
+    """
+    Calculate percentage of light/white pixels (brightness > 200).
+    """
+    # Convert to grayscale
+    if len(img_array.shape) == 3:
+        gray = np.mean(img_array, axis=2)
+    else:
+        gray = img_array
+    
+    light_pixels = np.sum(gray > 200)
+    total_pixels = gray.size
+    
+    return light_pixels / total_pixels if total_pixels > 0 else 0.0
+
+
+def _calculate_color_variance(img_array: np.ndarray) -> float:
+    """
+    Calculate color variance across the image (higher = more varied colors).
+    """
+    # Downsample for performance
+    small = Image.fromarray(img_array).resize((50, 50), Image.Resampling.LANCZOS)
+    small_array = np.array(small)
+    
+    # Calculate variance for each color channel
+    r_var = np.var(small_array[:, :, 0])
+    g_var = np.var(small_array[:, :, 1])
+    b_var = np.var(small_array[:, :, 2])
+    
+    # Average variance across channels
+    avg_var = (r_var + g_var + b_var) / 3
+    
+    # Normalize to 0-1 range (max variance is around 6000)
+    return min(avg_var / 6000, 1.0)

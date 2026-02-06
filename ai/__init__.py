@@ -1,68 +1,40 @@
 """
-AI Processing Package
-Contains modules for OCR, color detection, and image classification
-Optimized for web application usage with enhanced error handling and performance
+AI module for image search application.
+
+Provides:
+- Image classification (photo, screenshot, graphic, etc.)
+- Color extraction (simplified base color palette)
+- Object/content detection (heuristic-based)
+- Search scoring and ranking
+- Metadata processing and caching
+
+Usage:
+    from ai import get_processor
+    
+    processor = get_processor()
+    metadata = processor.process_image('path/to/image.jpg', ocr_text='...')
+    results = processor.search(query='meeting notes', color_filter='blue')
 """
 
-from .ocr import (
-    extract_text,
-    extract_text_with_positions,
-    get_text_confidence,
-    batch_extract_text,
-    contains_text,
-    search_text_in_image
-)
+# Main interface - use this in Flask app
+from .processor import ImageProcessor, get_processor
 
-from .color import (
-    extract_dominant_colors,
-    extract_dominant_colors_with_hex,
-    get_primary_color,
-    get_average_color,
-    rgb_to_color_name,
-    rgb_to_hex,
-    hex_to_rgb,
-    has_color,
-    batch_extract_colors,
-    is_monochrome
-)
-
-from .vision import (
-    classify_image_type,
-    get_image_metadata,
-    detect_content_keywords,
-    is_likely_meme,
-    get_quality_score,
-    batch_classify_images
-)
+# Individual modules (for advanced use or testing)
+from . import vision
+from . import color
+from . import objects
+from . import scoring
 
 __all__ = [
-    # OCR functions
-    'extract_text',
-    'extract_text_with_positions',
-    'get_text_confidence',
-    'batch_extract_text',
-    'contains_text',
-    'search_text_in_image',
-
-    # Color functions
-    'extract_dominant_colors',
-    'extract_dominant_colors_with_hex',
-    'get_primary_color',
-    'get_average_color',
-    'rgb_to_color_name',
-    'rgb_to_hex',
-    'hex_to_rgb',
-    'has_color',
-    'batch_extract_colors',
-    'is_monochrome',
-
-    # Vision functions
-    'classify_image_type',
-    'get_image_metadata',
-    'detect_content_keywords',
-    'is_likely_meme',
-    'get_quality_score',
-    'batch_classify_images',
+    # Main interface (recommended)
+    'get_processor',
+    'ImageProcessor',
+    
+    # Individual modules (advanced)
+    'vision',
+    'color', 
+    'objects',
+    'scoring',
 ]
 
 __version__ = '2.0.0'

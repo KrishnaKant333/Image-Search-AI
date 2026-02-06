@@ -1,0 +1,569 @@
+"""
+Image processing orchestrator - coordinates all AI modules.
+Optimizes metadata storage and retrieval for performance.
+"""
+
+import os
+import json
+import time
+from typing import Dict, List, Any, Optional
+from pathlib import Path
+from PIL import Image
+
+# Import AI modules
+from . import vision
+from . import color
+from . import objects
+from . import scoring
+
+
+class ImageProcessor:
+    """
+    Central processor for image analysis and metadata management.
+    
+    Handles:
+    - Processing images with all AI modules
+    - Loading/saving metadata efficiently
+    - Caching to avoid redundant processing
+    """
+    
+    def __init__(self, metadata_path: str = "metadata.json"):
+        """
+        Initialize processor.
+        
+        Args:
+            metadata_path: Path to JSON file storing image metadata
+        """
+        self.metadata_path = metadata_path
+        self._metadata_cache = None  # Lazy load
+        self._cache_dirty = False    # Track if we need to save
+    
+    def process_image(
+        self, 
+        image_path: str, 
+        ocr_text: str = "",
+        force_reprocess: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Process a single image through all AI modules.
+        
+        Extracts:
+        - Colors (base colors only)
+        - Image type tags (photo, screenshot, etc.)
+        - Object hints (text-heavy, people, nature, animals)
+        
+        Args:
+            image_path: Path to image file
+            ocr_text: Pre-extracted OCR text (optional)
+            force_reprocess: If True, ignore existing metadata
+            
+        Returns:
+            Metadata dict with all extracted features
+        """
+        filename = os.path.basename(image_path)
+        
+        # Check if already processed (unless forced)
+        if not force_reprocess:
+            existing = self._get_cached_metadata(filename)
+            if existing:
+                return existing
+        
+        # Process image through all modules
+        metadata = {
+            'filename': filename,
+            'path': image_path,
+            'timestamp': time.time(),
+        }
+        
+        # Extract colors (base colors only, max 3)
+        try:
+            metadata['colors'] = color.extract_colors(image_path, max_colors=3)
+        except Exception as e:
+            print(f"Color extraction failed for {filename}: {e}")
+            metadata['colors'] = ["gray"]
+        
+        # Classify image type (multiple tags possible)
+        try:
+            metadata['tags'] = vision.classify_image(image_path)
+        except Exception as e:
+            print(f"Image classification failed for {filename}: {e}")
+            metadata['tags'] = ["photo"]
+        
+        # Detect objects/content
+        try:
+            metadata['objects'] = objects.detect_objects(image_path, ocr_text)
+        except Exception as e:
+            print(f"Object detection failed for {filename}: {e}")
+            metadata['objects'] = []
+        
+        # Store OCR text if provided
+        metadata['ocr_text'] = ocr_text
+        
+        # Update cache
+        self._update_cached_metadata(filename, metadata)
+        
+        return metadata
+    
+    def process_batch(
+        self, 
+        image_paths: List[str],
+        ocr_texts: Optional[Dict[str, str]] = None,
+        force_reprocess: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Process multiple images efficiently.
+        
+        Loads metadata once, processes all images, saves once.
+        Much faster than processing images individually.
+        
+        Args:
+            image_paths: List of image file paths
+            ocr_texts: Optional dict mapping filename -> OCR text
+            force_reprocess: If True, ignore existing metadata
+            
+        Returns:
+            List of metadata dicts
+        """
+        if ocr_texts is None:
+            ocr_texts = {}
+        
+        results = []
+        
+        for image_path in image_paths:
+            filename = os.path.basename(image_path)
+            ocr_text = ocr_texts.get(filename, "")
+            
+            metadata = self.process_image(
+                image_path, 
+                ocr_text, 
+                force_reprocess
+            )
+            results.append(metadata)
+        
+        # Save all changes at once (optimization)
+        self._save_metadata()
+        
+        return results
+    
+    def search(
+        self,
+        query: str = "",
+        color_filter: Optional[str] = None,
+        type_filter: Optional[str] = None,
+        max_results: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Search images using the scoring system.
+        
+        Args:
+            query: Search keywords (space-separated)
+            color_filter: Filter by specific color
+            type_filter: Filter by image type
+            max_results: Maximum results to return
+            
+        Returns:
+            List of matching image metadata, ranked by relevance
+        """
+        # Load all metadata
+        all_images = self._load_all_metadata()
+        
+        # Parse query into terms
+        query_terms = query.strip().split() if query else []
+        
+        # Use scoring module to rank results
+        results = scoring.rank_search_results(
+            all_images,
+            query_terms,
+            color_filter,
+            type_filter,
+            max_results
+        )
+        
+        return results
+    
+    def get_image_metadata(self, filename: str) -> Optional[Dict[str, Any]]:
+        """
+        Get metadata for a specific image.
+        
+        Args:
+            filename: Image filename
+            
+        Returns:
+            Metadata dict or None if not found
+        """
+        return self._get_cached_metadata(filename)
+    
+    def get_all_metadata(self) -> List[Dict[str, Any]]:
+        """
+        Get metadata for all processed images.
+        
+        Returns:
+            List of all image metadata dicts
+        """
+        return self._load_all_metadata()
+    
+    def update_metadata(self, filename: str, updates: Dict[str, Any]) -> bool:
+        """
+        Update specific fields in an image's metadata.
+        
+        Args:
+            filename: Image filename
+            updates: Dict of fields to update
+            
+        Returns:
+            True if successful, False if image not found
+        """
+        metadata = self._get_cached_metadata(filename)
+        if not metadata:
+            return False
+        
+        metadata.update(updates)
+        self._update_cached_metadata(filename, metadata)
+        self._save_metadata()
+        
+        return True
+    
+    def delete_metadata(self, filename: str) -> bool:
+        """
+        Remove metadata for an image (e.g., after deletion).
+        
+        Args:
+            filename: Image filename
+            
+        Returns:
+            True if removed, False if not found
+        """
+        self._ensure_cache_loaded()
+        
+        if filename in self._metadata_cache:
+            del self._metadata_cache[filename]
+            self._cache_dirty = True
+            self._save_metadata()
+            return True
+        
+        return False
+    
+    # --- Internal cache management (optimization) ---
+    
+    def _ensure_cache_loaded(self):
+        """Lazy load metadata cache from disk."""
+        if self._metadata_cache is None:
+            self._metadata_cache = {}
+            
+            if os.path.exists(self.metadata_path):
+                try:
+                    with open(self.metadata_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        
+                    # Handle both dict and list formats
+                    if isinstance(data, dict):
+                        self._metadata_cache = data
+                    elif isinstance(data, list):
+                        # Convert list to dict for faster lookups
+                        self._metadata_cache = {
+                            item['filename']: item 
+                            for item in data
+                        }
+                except Exception as e:
+                    print(f"Error loading metadata: {e}")
+                    self._metadata_cache = {}
+    
+    def _get_cached_metadata(self, filename: str) -> Optional[Dict[str, Any]]:
+        """Get metadata from cache (loads cache if needed)."""
+        self._ensure_cache_loaded()
+        return self._metadata_cache.get(filename)
+    
+    def _update_cached_metadata(self, filename: str, metadata: Dict[str, Any]):
+        """Update metadata in cache."""
+        self._ensure_cache_loaded()
+        self._metadata_cache[filename] = metadata
+        self._cache_dirty = True
+    
+    def _load_all_metadata(self) -> List[Dict[str, Any]]:
+        """Load all metadata as a list."""
+        self._ensure_cache_loaded()
+        return list(self._metadata_cache.values())
+    
+    def _save_metadata(self):
+        """Save metadata cache to disk (only if changed)."""
+        if not self._cache_dirty:
+            return  # No changes, skip save
+        
+        self._ensure_cache_loaded()
+        
+        try:
+            # Create backup of existing file
+            if os.path.exists(self.metadata_path):
+                backup_path = f"{self.metadata_path}.backup"
+                import shutil
+                shutil.copy2(self.metadata_path, backup_path)
+            
+            # Save as dict for faster future loads
+            with open(self.metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(self._metadata_cache, f, indent=2, ensure_ascii=False)
+            
+            self._cache_dirty = False
+            
+        except Exception as e:
+            print(f"Error saving metadata: {e}")
+            # Restore backup if save failed
+            if os.path.exists(f"{self.metadata_path}.backup"):
+                import shutil
+                shutil.copy2(f"{self.metadata_path}.backup", self.metadata_path)
+    
+    def optimize_metadata_storage(self):
+        """
+        Optimize metadata storage by cleaning up and reorganizing.
+        
+        Call this periodically to:
+        - Remove orphaned metadata (files no longer exist)
+        - Compact the JSON file
+        - Rebuild indexes
+        """
+        self._ensure_cache_loaded()
+        
+        # Remove metadata for files that no longer exist
+        to_remove = []
+        for filename, metadata in self._metadata_cache.items():
+            image_path = metadata.get('path', '')
+            if image_path and not os.path.exists(image_path):
+                to_remove.append(filename)
+        
+        for filename in to_remove:
+            del self._metadata_cache[filename]
+            print(f"Removed orphaned metadata for: {filename}")
+        
+        if to_remove:
+            self._cache_dirty = True
+            self._save_metadata()
+            print(f"Cleaned up {len(to_remove)} orphaned entries")
+
+
+# Global processor instance (singleton pattern)
+_processor_instance = None
+
+
+def get_processor(metadata_path: str = "metadata.json") -> ImageProcessor:
+    """
+    Get the global ImageProcessor instance.
+    
+    Uses singleton pattern to ensure only one instance exists,
+    which improves performance by maintaining a single metadata cache.
+    
+    Args:
+        metadata_path: Path to metadata JSON file
+        
+    Returns:
+        ImageProcessor instance
+    """
+    global _processor_instance
+    
+    if _processor_instance is None:
+        _processor_instance = ImageProcessor(metadata_path)
+    
+    return _processor_instance
+
+
+# ============================================================================
+# Flask app.py Compatibility Layer
+# ============================================================================
+# These functions provide a simple interface compatible with the existing
+# Flask app.py, which expects standalone functions rather than the class-based
+# ImageProcessor approach.
+
+def process_image(filepath: str, filename: str = None) -> Dict[str, Any]:
+    """
+    Flask-compatible wrapper for image processing.
+    
+    This function matches the signature expected by app.py and returns
+    a dictionary with the exact keys the Flask app expects:
+    - ocr_text: str
+    - colors: list[str]
+    - image_type: str (single primary type)
+    - keywords: list[str]
+    - metadata: dict
+    
+    Args:
+        filepath: Path to the image file
+        filename: Original filename (optional, for display purposes)
+        
+    Returns:
+        Dictionary with OCR text, colors, type, keywords, and metadata
+    """
+    try:
+        # Extract OCR text (placeholder - integrate with your OCR solution)
+        ocr_text = extract_text(filepath)
+        
+        # Use our new AI modules
+        # Get colors (top 3 base colors)
+        colors_list = color.extract_colors(filepath, max_colors=3)
+        
+        # Get image classification tags (returns multiple)
+        tags = vision.classify_image(filepath)
+        
+        # Get object detection hints
+        objects_list = objects.detect_objects(filepath, ocr_text)
+        
+        # Get image metadata (dimensions, format, etc.)
+        img_metadata = get_image_metadata(filepath)
+        
+        # Normalize output to match app.py expectations
+        # Choose primary image type (highest confidence from vision.py)
+        image_type = tags[0] if tags else "photo"
+        
+        # Combine tags and objects into keywords
+        keywords = list(set(tags[1:] + objects_list))  # Skip first tag (it's the primary type)
+        
+        # Add OCR-derived keywords
+        content_keywords = detect_content_keywords(filepath, ocr_text)
+        keywords.extend(content_keywords)
+        keywords = list(set(keywords))  # Remove duplicates
+        
+        return {
+            'ocr_text': ocr_text,
+            'colors': colors_list,
+            'image_type': image_type,
+            'keywords': keywords,
+            'metadata': img_metadata
+        }
+        
+    except Exception as e:
+        print(f"Error processing image {filepath}: {e}")
+        # Return safe defaults on error
+        return {
+            'ocr_text': '',
+            'colors': ['gray'],
+            'image_type': 'photo',
+            'keywords': [],
+            'metadata': {}
+        }
+
+
+def extract_text(filepath: str) -> str:
+    """
+    Extract text from image using OCR.
+    
+    PLACEHOLDER: Integrate with your preferred OCR solution:
+    - pytesseract (Tesseract OCR)
+    - EasyOCR
+    - Google Cloud Vision API
+    - AWS Textract
+    
+    Args:
+        filepath: Path to image file
+        
+    Returns:
+        Extracted text string
+    """
+    try:
+        # TODO: Integrate with actual OCR solution
+        # Example with pytesseract:
+        # import pytesseract
+        # from PIL import Image
+        # img = Image.open(filepath)
+        # text = pytesseract.image_to_string(img)
+        # return text.strip()
+        
+        # For now, return empty string
+        # The app will still work with color/type/object detection
+        return ""
+        
+    except Exception as e:
+        print(f"OCR error for {filepath}: {e}")
+        return ""
+
+
+def get_image_metadata(filepath: str) -> Dict[str, Any]:
+    """
+    Extract basic image metadata (dimensions, format, size).
+    
+    Args:
+        filepath: Path to image file
+        
+    Returns:
+        Dictionary with image metadata
+    """
+    try:
+        img = Image.open(filepath)
+        file_size = os.path.getsize(filepath)
+        
+        return {
+            'width': img.width,
+            'height': img.height,
+            'format': img.format,
+            'mode': img.mode,
+            'size_bytes': file_size,
+            'size_kb': round(file_size / 1024, 2)
+        }
+    except Exception as e:
+        print(f"Error getting metadata for {filepath}: {e}")
+        return {}
+
+
+def detect_content_keywords(filepath: str, ocr_text: str) -> List[str]:
+    """
+    Detect content-based keywords from OCR text and image analysis.
+    
+    Extracts meaningful keywords like:
+    - Document types (invoice, receipt, bill)
+    - Payment related (UPI, payment, transaction)
+    - ID cards (student ID, identity card)
+    - Common entities
+    
+    Args:
+        filepath: Path to image file
+        ocr_text: Extracted OCR text
+        
+    Returns:
+        List of detected keywords
+    """
+    keywords = []
+    
+    if not ocr_text:
+        return keywords
+    
+    ocr_lower = ocr_text.lower()
+    
+    # Payment-related keywords
+    payment_terms = [
+        ('upi', ['upi', 'unified payment', 'bhim']),
+        ('payment', ['paid', 'payment', 'transaction']),
+        ('gpay', ['google pay', 'gpay', 'g pay']),
+        ('phonepe', ['phonepe', 'phone pe']),
+        ('paytm', ['paytm', 'pay tm']),
+    ]
+    
+    for keyword, patterns in payment_terms:
+        if any(pattern in ocr_lower for pattern in patterns):
+            keywords.append(keyword)
+    
+    # Document types
+    doc_terms = [
+        ('invoice', ['invoice', 'bill to']),
+        ('receipt', ['receipt', 'received with thanks']),
+        ('bill', ['bill', 'amount due', 'total amount']),
+    ]
+    
+    for keyword, patterns in doc_terms:
+        if any(pattern in ocr_lower for pattern in patterns):
+            keywords.append(keyword)
+    
+    # ID cards
+    id_terms = [
+        ('id_card', ['id card', 'identity card', 'student id', 'employee id']),
+        ('student', ['student', 'enrollment', 'roll no']),
+    ]
+    
+    for keyword, patterns in id_terms:
+        if any(pattern in ocr_lower for pattern in patterns):
+            keywords.append(keyword)
+    
+    # Financial
+    if any(term in ocr_lower for term in ['₹', 'rs.', 'inr', 'amount']):
+        keywords.append('financial')
+    
+    # Remove duplicates
+    keywords = list(set(keywords))
+    
+    return keywords
+

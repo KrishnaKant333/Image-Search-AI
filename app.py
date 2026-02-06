@@ -11,9 +11,7 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 
 # Import AI modules
-from ai.ocr import extract_text
-from ai.color import extract_dominant_colors
-from ai.vision import classify_image_type, detect_content_keywords, get_image_metadata
+from ai.processor import process_image
 
 app = Flask(__name__)
 
@@ -54,41 +52,6 @@ def save_metadata(data):
         json.dump(data, f, indent=2)
 
 
-def process_image(filepath, filename):
-    """
-    Process an uploaded image through the AI pipeline.
-    Extracts text, colors, and classifies the image type.
-    """
-    print(f"Processing image: {filename}")
-    
-    # Extract OCR text
-    ocr_text = extract_text(filepath)
-    print(f"  OCR text: {ocr_text[:100]}..." if len(ocr_text) > 100 else f"  OCR text: {ocr_text}")
-    
-    # Extract dominant colors
-    colors = extract_dominant_colors(filepath, num_colors=3)
-    print(f"  Colors: {colors}")
-    
-    # Classify image type
-    image_type = classify_image_type(filepath)
-    print(f"  Type: {image_type}")
-    
-    # Get image metadata
-    metadata = get_image_metadata(filepath)
-    
-    # Detect content keywords based on OCR and image analysis
-    keywords = detect_content_keywords(filepath, ocr_text)
-    print(f"  Keywords: {keywords}")
-    
-    return {
-        'ocr_text': ocr_text,
-        'colors': colors,
-        'image_type': image_type,
-        'keywords': keywords,
-        'metadata': metadata
-    }
-
-
 def calculate_relevance(image_data, query_terms):
     """
     Calculate relevance score for an image based on query terms.
@@ -96,7 +59,7 @@ def calculate_relevance(image_data, query_terms):
     """
     score = 0
     query_terms = [term.lower() for term in query_terms]
-    
+
     # Check OCR text (highest weight)
     ocr_text = image_data.get('ocr_text', '').lower()
     for term in query_terms:
@@ -105,19 +68,19 @@ def calculate_relevance(image_data, query_terms):
             # Bonus for exact word match
             if f' {term} ' in f' {ocr_text} ':
                 score += 5
-    
+
     # Check colors (medium weight)
     colors = [c.lower() for c in image_data.get('colors', [])]
     for term in query_terms:
         if term in colors:
             score += 7
-    
+
     # Check image type
     image_type = image_data.get('image_type', '').lower()
     for term in query_terms:
         if term in image_type:
             score += 5
-    
+
     # Check keywords
     keywords = [k.lower() for k in image_data.get('keywords', [])]
     for term in query_terms:
@@ -127,13 +90,13 @@ def calculate_relevance(image_data, query_terms):
         for keyword in keywords:
             if term in keyword or keyword in term:
                 score += 3
-    
+
     # Check filename
     filename = image_data.get('original_filename', '').lower()
     for term in query_terms:
         if term in filename:
             score += 4
-    
+
     return score
 
 
@@ -157,32 +120,32 @@ def upload_images():
     """
     if 'files' not in request.files:
         return jsonify({'error': 'No files provided'}), 400
-    
+
     files = request.files.getlist('files')
-    
+
     if not files or files[0].filename == '':
         return jsonify({'error': 'No files selected'}), 400
-    
+
     metadata = load_metadata()
     uploaded = []
     errors = []
-    
+
     for file in files:
         if file and allowed_file(file.filename):
             # Generate unique filename
             original_filename = secure_filename(file.filename)
             ext = original_filename.rsplit('.', 1)[1].lower()
             unique_filename = f"{uuid.uuid4().hex}.{ext}"
-            
+
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-            
+
             try:
                 # Save file
                 file.save(filepath)
-                
+
                 # Process with AI
                 analysis = process_image(filepath, original_filename)
-                
+
                 # Create image record
                 image_record = {
                     'id': uuid.uuid4().hex,
@@ -195,22 +158,22 @@ def upload_images():
                     'keywords': analysis['keywords'],
                     'metadata': analysis['metadata']
                 }
-                
+
                 metadata['images'].append(image_record)
                 uploaded.append({
                     'id': image_record['id'],
                     'filename': unique_filename,
                     'original_filename': original_filename
                 })
-                
+
             except Exception as e:
                 errors.append({'filename': original_filename, 'error': str(e)})
         else:
             errors.append({'filename': file.filename, 'error': 'File type not allowed'})
-    
+
     # Save updated metadata
     save_metadata(metadata)
-    
+
     return jsonify({
         'uploaded': uploaded,
         'errors': errors,
@@ -225,7 +188,7 @@ def search_images():
     Returns images sorted by relevance.
     """
     query = request.args.get('q', '').strip()
-    
+
     if not query:
         # Return all images if no query
         metadata = load_metadata()
@@ -245,13 +208,13 @@ def search_images():
             ],
             'total': len(images)
         })
-    
+
     # Split query into search terms
     query_terms = query.lower().split()
-    
+
     # Also add common synonyms/variations
     expanded_terms = set(query_terms)
-    
+
     # Expand common terms
     expansions = {
         'upi': ['payment', 'transaction', 'gpay', 'phonepe', 'paytm'],
@@ -265,14 +228,14 @@ def search_images():
         'doc': ['document', 'paper'],
         'document': ['doc', 'paper', 'file'],
     }
-    
+
     for term in query_terms:
         if term in expansions:
             expanded_terms.update(expansions[term])
-    
+
     metadata = load_metadata()
     images = metadata.get('images', [])
-    
+
     # Calculate relevance for each image
     results = []
     for img in images:
@@ -286,10 +249,10 @@ def search_images():
                 'colors': img.get('colors', []),
                 'relevance': score
             })
-    
+
     # Sort by relevance (highest first)
     results.sort(key=lambda x: x['relevance'], reverse=True)
-    
+
     return jsonify({
         'query': query,
         'results': results,
@@ -302,7 +265,7 @@ def get_all_images():
     """Get all uploaded images"""
     metadata = load_metadata()
     images = metadata.get('images', [])
-    
+
     return jsonify({
         'images': [
             {
@@ -324,25 +287,25 @@ def delete_image(image_id):
     """Delete an image by ID"""
     metadata = load_metadata()
     images = metadata.get('images', [])
-    
+
     # Find and remove the image
     image_to_delete = None
     for i, img in enumerate(images):
         if img['id'] == image_id:
             image_to_delete = images.pop(i)
             break
-    
+
     if not image_to_delete:
         return jsonify({'error': 'Image not found'}), 404
-    
+
     # Delete file from disk
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], image_to_delete['filename'])
     if os.path.exists(filepath):
         os.remove(filepath)
-    
+
     # Save updated metadata
     save_metadata(metadata)
-    
+
     return '', 204
 
 
@@ -350,5 +313,6 @@ if __name__ == '__main__':
     # Initialize empty metadata file if it doesn't exist
     if not os.path.exists(METADATA_FILE):
         save_metadata({'images': []})
-    
+
     app.run(host='0.0.0.0', port=5000, debug=False)
+	
