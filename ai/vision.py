@@ -8,39 +8,39 @@ import numpy as np
 from typing import List, Dict, Tuple
 
 
-def is_text_heavy(image_type: str, keywords: List[str]) -> bool:
-    """
-    Heuristic: return True ONLY if image is likely to contain significant text.
-    Used to skip OCR for normal photos (improves processing speed).
+# def is_text_heavy(image_type: str, keywords: List[str]) -> bool:
+#     """
+#     Heuristic: return True ONLY if image is likely to contain significant text.
+#     Used to skip OCR for normal photos (improves processing speed).
 
-    Returns True for:
-    - image_type in {"document", "screenshot"}
-    - OR keywords indicating text-heavy content (receipt, invoice, bill, poster,
-      id card, flyer, text-heavy)
+#     Returns True for:
+#     - image_type in {"document", "screenshot"}
+#     - OR keywords indicating text-heavy content (receipt, invoice, bill, poster,
+#       id card, flyer, text-heavy)
 
-    Args:
-        image_type: Primary image type from classification (e.g. "photo", "document")
-        keywords: List of tags/keywords (from vision tags + object detection)
+#     Args:
+#         image_type: Primary image type from classification (e.g. "photo", "document")
+#         keywords: List of tags/keywords (from vision tags + object detection)
 
-    Returns:
-        True if OCR should run; False to skip OCR and save processing time
-    """
-    type_lower = (image_type or "").lower()
-    keywords_lower = [str(k).lower() for k in (keywords or [])]
+#     Returns:
+#         True if OCR should run; False to skip OCR and save processing time
+#     """
+#     type_lower = (image_type or "").lower()
+#     keywords_lower = [str(k).lower() for k in (keywords or [])]
 
-    # Document/screenshot types almost always have text worth extracting
-    if type_lower in {"document", "screenshot"}:
-        return True
+#     # Document/screenshot types almost always have text worth extracting
+#     if type_lower in {"document", "screenshot"}:
+#         return True
 
-    # Keywords that indicate text-heavy content (documents, receipts, posters, etc.)
-    text_heavy_keywords = {
-        "receipt", "invoice", "bill", "poster", "id_card", "id card",
-        "flyer", "text-heavy", "document", "screenshot"
-    }
-    if any(kw in text_heavy_keywords for kw in keywords_lower):
-        return True
+#     # Keywords that indicate text-heavy content (documents, receipts, posters, etc.)
+#     text_heavy_keywords = {
+#         "receipt", "invoice", "bill", "poster", "id_card", "id card",
+#         "flyer", "text-heavy", "document", "screenshot"
+#     }
+#     if any(kw in text_heavy_keywords for kw in keywords_lower):
+#         return True
 
-    return False
+#     return False
 
 
 def classify_image(image_path: str) -> List[str]:

@@ -405,6 +405,19 @@ body {
     font-weight: 600;
 }
 
+/* Background OCR: show when text is still being read */
+.ocr-pending-badge {
+    position: absolute;
+    bottom: 20px;
+    right: 8px;
+    font-size: 0.65rem;
+    padding: 2px 6px;
+    border-radius: 8px;
+    background: rgba(156, 163, 175, 0.9);
+    color: white;
+    font-weight: 500;
+}
+
 .delete-btn {
     position: absolute;
     top: 8px;

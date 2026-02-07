@@ -5,9 +5,12 @@ Optimizes metadata storage and retrieval for performance.
 
 import os
 import json
+import queue
+import threading
 import time
-from typing import Dict, List, Any, Optional
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 from PIL import Image
 
 # Import AI modules
@@ -16,6 +19,39 @@ from . import color
 from . import objects
 from . import scoring
 from . import ocr
+
+
+# -------------------------------------------------------------------
+# OCR keyword gate
+# OCR will run ONLY if one of these keywords is present
+# -------------------------------------------------------------------
+
+OCR_TRIGGER_KEYWORDS = {
+    "text-heavy",
+    "document",
+    "invoice",
+    "receipt",
+    "bill",
+    "id",
+    "id_card",
+    "card",
+    "paper",
+    "form",
+    "statement",
+    "letter"
+}
+
+
+def should_run_ocr(keywords: list[str]) -> bool:
+    """
+    Decide whether OCR should run based on semantic keywords only.
+    No heuristics, no image analysis, no guessing.
+    """
+    if not keywords:
+        return False
+
+    keyword_set = {k.lower() for k in keywords}
+    return not OCR_TRIGGER_KEYWORDS.isdisjoint(keyword_set)
 
 
 class ImageProcessor:
@@ -371,8 +407,218 @@ def get_processor(metadata_path: str = "metadata.json") -> ImageProcessor:
 # These functions provide a simple interface compatible with the existing
 # Flask app.py, which expects standalone functions rather than the class-based
 # ImageProcessor approach.
+#
+# Execution order for background OCR:
+# 1. Foreground (sync): process_image_foreground_only() runs vision, color,
+#    object detection, metadata. Saves with ocr_text="", ocr_status="pending".
+# 2. Response returned immediately; images render with non-OCR metadata.
+# 3. Background (thread): run_ocr_background() runs OCR + OCR-derived keywords,
+#    then updates metadata with ocr_text, ocr_keywords, ocr_status="done".
 
-def process_image(filepath: str, filename: str = None, defer_ocr: bool = False) -> Dict[str, Any]:
+
+def process_image_foreground_only(filepath: str, filename: str = None) -> Dict[str, Any]:
+    """
+    Run only non-OCR analysis so upload can return immediately.
+    Used for background-OCR pipeline: vision, color, object/visual keywords.
+    OCR and OCR-derived keywords run later in run_ocr_background().
+    """
+    filepath = os.path.abspath(os.path.normpath(filepath))
+    colors_list = ["gray"]
+    image_type = "photo"
+    keywords = []
+    img_metadata = {}
+
+    try:
+        try:
+            colors_list = color.extract_colors(filepath, max_colors=3)
+        except Exception as e:
+            print(f"Color extraction failed for {filepath}: {e}")
+
+        tags = []
+        try:
+            tags = vision.classify_image(filepath)
+        except Exception as e:
+            print(f"Vision classification failed for {filepath}: {e}")
+        image_type = tags[0] if tags else "photo"
+
+        objects_list = []
+        try:
+            objects_list = objects.detect_objects(filepath, "")
+        except Exception as e:
+            print(f"Object detection failed for {filepath}: {e}")
+
+        try:
+            img_metadata = get_image_metadata(filepath)
+        except Exception as e:
+            print(f"Metadata failed for {filepath}: {e}")
+
+        # Visual keywords only (no OCR, no detect_content_keywords)
+        keywords = list(set((tags[1:] if len(tags) > 1 else []) + objects_list))
+
+        return {
+            "ocr_text": "",
+            "ocr_status": "pending",
+            "ocr_keywords": [],
+            "colors": colors_list,
+            "image_type": image_type,
+            "keywords": keywords,
+            "metadata": img_metadata,
+        }
+    except Exception as e:
+        print(f"Error in foreground processing for {filepath}: {e}")
+        return {
+            "ocr_text": "",
+            "ocr_status": "pending",
+            "ocr_keywords": [],
+            "colors": colors_list,
+            "image_type": image_type,
+            "keywords": keywords,
+            "metadata": img_metadata or {},
+        }
+
+
+# -------- Single-worker OCR queue (no concurrent OCR) --------
+# One thread processes jobs sequentially so OCR never runs in parallel.
+# metadata_lock: shared with app to prevent race when upload saves while OCR worker saves
+metadata_lock = threading.Lock()
+_ocr_queue: queue.Queue = queue.Queue()
+_ocr_worker_started = False
+_ocr_worker_lock = threading.Lock()
+
+
+def _ocr_worker() -> None:
+    """Single background worker: process one OCR job at a time to avoid overload."""
+    while True:
+        try:
+            job = _ocr_queue.get()
+            if job is None:
+                break
+            filepath, image_id, metadata_file_path = job
+            _process_one_ocr_job(filepath, image_id, metadata_file_path)
+        except Exception as e:
+            print(f"OCR worker error: {e}")
+        finally:
+            try:
+                _ocr_queue.task_done()
+            except Exception:
+                pass
+
+
+def _process_one_ocr_job(filepath: str, image_id: str, metadata_file_path: str) -> None:
+    """
+    Process a single OCR job: skip if non-text-heavy, else run OCR and set
+    ocr_status to done/failed only after real execution; never mark done if skipped.
+    Uses metadata_lock to avoid overwriting concurrent uploads; reloads before save.
+    """
+    filepath = os.path.abspath(os.path.normpath(filepath))
+    metadata_file_path = os.path.abspath(metadata_file_path)
+
+    try:
+        with metadata_lock:
+            with open(metadata_file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+    except Exception as e:
+        print(f"OCR job: could not load metadata for {image_id}: {e}")
+        return
+
+    images = data.get("images", [])
+    record = None
+    for img in images:
+        if img.get("id") == image_id:
+            record = img
+            break
+    if not record:
+        print(f"OCR job: image {image_id} not found in metadata")
+        return
+
+    # Same keyword format as process_image: vision tags[1:] + objects (for is_text_heavy)
+    image_type = (record.get("image_type") or "photo").lower()
+    keywords = list(record.get("keywords") or [])
+    if not should_run_ocr(keywords):
+        print(f"[OCR] Skipped for {image_id} | keywords={keywords}")
+        record["ocr_status"] = "skipped"
+        record["ocr_text"] = ""
+        record["ocr_keywords"] = []
+        try:
+            with open(metadata_file_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"OCR job: could not save metadata (skipped) for {image_id}: {e}")
+        return
+
+    record["ocr_status"] = "running"
+    try:
+        print(f"[OCR] Running for {image_id} | keywords={keywords}")
+        with metadata_lock:
+            with open(metadata_file_path, "r", encoding="utf-8") as f:
+                fresh = json.load(f)
+            for img in fresh.get("images", []):
+                if img.get("id") == image_id:
+                    img["ocr_status"] = "running"
+                    break
+            with open(metadata_file_path, "w", encoding="utf-8") as f:
+                json.dump(fresh, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"OCR job: could not save metadata (running) for {image_id}: {e}")
+
+    try:
+        ocr_text = extract_text(filepath)
+        ocr_keywords = detect_content_keywords(filepath, ocr_text)
+        # Re-run object detection with OCR text (aligns with full process_image)
+        objects_list = objects.detect_objects(filepath, ocr_text)
+        existing_kw = set(record.get("keywords") or [])
+        merged_keywords = list(existing_kw | set(objects_list))
+        record["ocr_status"] = "done"
+        record["ocr_text"] = ocr_text
+        record["ocr_keywords"] = ocr_keywords
+        record["keywords"] = merged_keywords
+        print(f"[OCR] Done for {image_id} | chars={len(ocr_text)}")
+
+    except Exception as e:
+        print(f"Background OCR failed for {filepath}: {e}")
+        record["ocr_status"] = "failed"
+        record["ocr_text"] = ""
+        record["ocr_keywords"] = []
+
+    # Reload before save so we don't overwrite images added by concurrent uploads
+    try:
+        with metadata_lock:
+            with open(metadata_file_path, "r", encoding="utf-8") as f:
+                fresh = json.load(f)
+            for img in fresh.get("images", []):
+                if img.get("id") == image_id:
+                    img["ocr_status"] = record["ocr_status"]
+                    img["ocr_text"] = record["ocr_text"]
+                    img["ocr_keywords"] = record["ocr_keywords"]
+                    if "keywords" in record:
+                        img["keywords"] = record["keywords"]
+                    break
+            with open(metadata_file_path, "w", encoding="utf-8") as f:
+                json.dump(fresh, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"OCR job: could not save metadata (final) for {image_id}: {e}")
+
+
+def _ensure_ocr_worker_started() -> None:
+    global _ocr_worker_started
+    with _ocr_worker_lock:
+        if not _ocr_worker_started:
+            t = threading.Thread(target=_ocr_worker, daemon=True)
+            t.start()
+            _ocr_worker_started = True
+
+
+def run_ocr_background(filepath: str, image_id: str, metadata_file_path: str) -> None:
+    """
+    Enqueue one OCR job. A single worker processes jobs one at a time.
+    Upload returns immediately; status is updated only after real execution
+    (done/failed/skipped) so ocr_status never reflects a fake completion.
+    """
+    _ensure_ocr_worker_started()
+    _ocr_queue.put((filepath, image_id, os.path.abspath(metadata_file_path)))
+
+
+def process_image(filepath: str, filename: str = None) -> Dict[str, Any]:
     """
     Flask-compatible wrapper for image processing.
     
@@ -383,12 +629,10 @@ def process_image(filepath: str, filename: str = None, defer_ocr: bool = False) 
     - image_type: str (single primary type)
     - keywords: list[str]
     - metadata: dict
-    - ocr_status: str (optional) - "pending" | "done" | "skipped"
     
     Args:
         filepath: Path to the image file (relative or absolute; normalized to absolute)
         filename: Original filename (optional, for display purposes)
-        defer_ocr: If True, skip synchronous OCR for text-heavy images; caller runs OCR in background.
         
     Returns:
         Dictionary with OCR text, colors, type, keywords, and metadata
@@ -427,23 +671,14 @@ def process_image(filepath: str, filename: str = None, defer_ocr: bool = False) 
         # --- OCR: only run for text-heavy images (saves time on normal photos) ---
         # is_text_heavy uses image_type + tags + objects to decide if OCR is worthwhile.
         # Skipping OCR for photos/selfies improves processing speed significantly.
-        # When defer_ocr=True, skip sync OCR and return ocr_status="pending" for background processing.
         pre_keywords = list(set((tags[1:] if len(tags) > 1 else []) + objects_list))
-        is_text_heavy = vision.is_text_heavy(image_type, pre_keywords)
-        ocr_status = "skipped"  # Non-text-heavy images skip OCR
-        if is_text_heavy:
-            if defer_ocr:
-                ocr_text = ""  # Background OCR will populate this later
-                ocr_status = "pending"
-            else:
-                try:
-                    ocr_text = extract_text(filepath)
-                    ocr_status = "done"
-                    # Re-run object detection with OCR text for better "text-heavy" hint
-                    objects_list = objects.detect_objects(filepath, ocr_text)
-                except Exception as e:
-                    print(f"OCR failed for {filepath}: {e}")
-                    ocr_status = "failed"
+        if vision.is_text_heavy(image_type, pre_keywords):
+            try:
+                ocr_text = extract_text(filepath)
+                # Re-run object detection with OCR text for better "text-heavy" hint
+                objects_list = objects.detect_objects(filepath, ocr_text)
+            except Exception as e:
+                print(f"OCR failed for {filepath}: {e}")
         else:
             ocr_text = ""
 
@@ -468,7 +703,6 @@ def process_image(filepath: str, filename: str = None, defer_ocr: bool = False) 
             "image_type": image_type,
             "keywords": keywords,
             "metadata": img_metadata,
-            "ocr_status": ocr_status,
         }
     except Exception as e:
         print(f"Error processing image {filepath}: {e}")
@@ -478,12 +712,7 @@ def process_image(filepath: str, filename: str = None, defer_ocr: bool = False) 
             "image_type": image_type,
             "keywords": keywords,
             "metadata": img_metadata or {},
-            "ocr_status": "failed",
         }
-
-# NOTE:
-# process_image() MUST NOT start threads.
-# Background OCR lifecycle is owned by app.py.
 
 
 def extract_text(filepath: str) -> str:

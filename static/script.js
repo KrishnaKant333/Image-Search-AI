@@ -116,51 +116,45 @@ async function uploadFiles(files) {
     progressText.textContent = `Optimizing & processing ${validFiles.length} image(s)...`;
 
 
-    // Create form data
-    const formData = new FormData();
-
-    for (const file of validFiles) {
-        const compressedFile = await compressImage(file);
-        formData.append('files', compressedFile);
-    }
-
     try {
-        // Simulate progress
-        let progress = 0;
-        const progressInterval = setInterval(() => {
-            progress += 5;
-            if (progress <= 90) {
-                progressFill.style.width = progress + '%';
+        let uploadedCount = 0;
+        const total = validFiles.length;
+
+        // Upload one file at a time so images render progressively (one by one)
+        for (let i = 0; i < validFiles.length; i++) {
+            const file = validFiles[i];
+            const compressedFile = await compressImage(file);
+            const formData = new FormData();
+            formData.append('files', compressedFile);
+
+            progressText.textContent = `Processing ${i + 1}/${total}...`;
+            progressFill.style.width = `${Math.round(((i + 1) / total) * 100)}%`;
+
+            const response = await fetch('/api/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) throw new Error('Upload failed');
+
+            const result = await response.json();
+            if (result.uploaded && result.uploaded.length > 0) {
+                uploadedCount += result.uploaded.length;
+                // Refresh immediately so this image appears right away (one-by-one rendering)
+                loadImages();
             }
-        }, 200);
+            if (result.errors && result.errors.length > 0) {
+                console.error('Upload errors:', result.errors);
+            }
+        }
 
-        // Upload files
-        const response = await fetch('/api/upload', {
-            method: 'POST',
-            body: formData
-        });
-
-        clearInterval(progressInterval);
         progressFill.style.width = '100%';
-
-        if (!response.ok) {
-            throw new Error('Upload failed');
-        }
-
-        const result = await response.json();
-
-        // Show results
-        if (result.uploaded.length > 0) {
-            showToast(`Successfully uploaded ${result.uploaded.length} image(s)`, 'success');
+        if (uploadedCount > 0) {
+            showToast(`Successfully uploaded ${uploadedCount} image(s)`, 'success');
             progressText.textContent = 'AI processing complete!';
-
-            // Refresh the image list
-            loadImages();
         }
-
-        if (result.errors.length > 0) {
-            console.error('Upload errors:', result.errors);
-            showToast(`${result.errors.length} file(s) failed to upload`, 'error');
+        if (uploadedCount < total) {
+            showToast(`${total - uploadedCount} file(s) failed to upload`, 'error');
         }
 
     } catch (error) {
@@ -252,15 +246,19 @@ function renderImages(images, showRelevance = false) {
         return;
     }
 
+    // Merge visual keywords + OCR-derived (when available)
+    const allKeywords = (img) => [...(img.keywords || []), ...(img.ocr_keywords || [])];
+
     resultsGrid.innerHTML = images.map(img => `
         <div class="image-card" data-testid="card-image-${img.id}" onclick="openImage('${img.id}')">
             ${showRelevance && img.relevance ? `<span class="relevance-badge">${img.relevance} pts</span>` : ''}
+            ${(img.ocr_status === 'pending' || img.ocr_status === 'running') ? '<span class="ocr-pending-badge" title="Reading text...">OCR…</span>' : ''}
             <button class="delete-btn" onclick="event.stopPropagation(); deleteImage('${img.id}')" data-testid="button-delete-${img.id}">&times;</button>
             <img src="/uploads/${escapeHtml(img.filename)}" alt="${escapeHtml(img.original_filename)}" loading="lazy">
             <div class="image-card-info">
                 <div class="image-card-name">${escapeHtml(img.original_filename)}</div>
                 <div class="image-card-tags">
-                ${(img.keywords || []).slice(0, 2).map(keyword =>
+                ${allKeywords(img).slice(0, 2).map(keyword =>
                     `<span class="image-tag keyword">${escapeHtml(keyword)}</span>`
                 ).join('')}
                 ${img.image_type
@@ -290,17 +288,19 @@ function openImage(imageId) {
     modalImage.src = `/uploads/${image.filename}`;
     modalImage.alt = image.original_filename;
 
+    const modalKeywords = [...(image.keywords || []), ...(image.ocr_keywords || [])];
     modalInfo.innerHTML = `
         <div style="color: var(--text-primary); margin-bottom: 8px;">
             <strong>${escapeHtml(image.original_filename)}</strong>
+            ${(image.ocr_status === 'pending' || image.ocr_status === 'running') ? '<span class="ocr-pending-badge" style="margin-left:8px;">Reading text…</span>' : ''}
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-        ${(image.keywords || []).slice(0,2).map(k =>
+        ${modalKeywords.slice(0, 3).map(k =>
             `<span class="image-tag keyword">${escapeHtml(k)}</span>`
         ).join('')}
         ${image.image_type ? `<span class="image-tag type">${escapeHtml(image.image_type)}</span>` : ''}
 
-        ${(image.colors || []).slice(0,2).map(c =>
+        ${(image.colors || []).slice(0,3).map(c =>
             `<span class="image-tag color">${escapeHtml(c)}</span>`
         ).join('')}
       
