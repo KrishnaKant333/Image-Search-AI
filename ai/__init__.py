@@ -17,7 +17,7 @@ Usage:
 """
 
 # Main interface - use this in Flask app
-from .processor import ImageProcessor, get_processor
+from .processor import ImageProcessor, get_processor, process_image
 
 # Individual modules (for advanced use or testing)
 from . import vision
@@ -29,10 +29,11 @@ __all__ = [
     # Main interface (recommended)
     'get_processor',
     'ImageProcessor',
+    'process_image',
     
     # Individual modules (advanced)
     'vision',
-    'color', 
+    'color',
     'objects',
     'scoring',
 ]

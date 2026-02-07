@@ -1,11 +1,12 @@
 """
 Lightweight object/content detection using visual heuristics.
 No ML models - uses color analysis, edge detection, and patterns.
+Tuned for accuracy and precision to reduce false positives.
 """
 
 from PIL import Image
 import numpy as np
-from typing import List, Set
+from typing import List, Set, Tuple
 
 
 # Object/content categories we can detect
@@ -16,314 +17,242 @@ DETECTABLE_OBJECTS = [
     "animals",       # Animal fur/patterns
 ]
 
+# Minimum confidence (0.0-1.0) to include a category in results
+CONFIDENCE_THRESHOLD = 0.52
+
 
 def detect_objects(image_path: str, ocr_text: str = "") -> List[str]:
     """
     Detect likely objects/content in an image using heuristics.
-    
-    This provides hints about image content without heavy ML models.
-    Uses color patterns, texture analysis, and OCR density.
-    
+    Returns only categories that meet a confidence threshold to reduce false positives.
+
     Args:
         image_path: Path to the image file
         ocr_text: OCR-extracted text (if available) for text density analysis
-        
+
     Returns:
         List of detected object categories (e.g., ["text-heavy", "people"])
     """
     try:
         img = Image.open(image_path)
-        
-        # Convert to RGB if needed
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        
-        detected = set()
-        
-        # Resize for performance
-        img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Resize for consistent analysis (slightly larger for better texture)
+        img.thumbnail((400, 400), Image.Resampling.LANCZOS)
         img_array = np.array(img)
-        
-        # --- TEXT-HEAVY DETECTION ---
-        # High OCR density indicates text-heavy content
-        if ocr_text and len(ocr_text) > 100:
-            # Lots of text extracted = text-heavy image
-            detected.add("text-heavy")
-        elif _has_text_pattern(img_array):
-            # Visual pattern suggests text even without OCR
-            detected.add("text-heavy")
-        
-        # --- PEOPLE DETECTION ---
-        # Look for skin tone colors
-        if _has_skin_tones(img_array):
-            detected.add("people")
-        
-        # --- NATURE DETECTION ---
-        # Look for organic green patterns and natural color distribution
-        if _has_nature_characteristics(img_array):
-            detected.add("nature")
-        
-        # --- ANIMAL DETECTION ---
-        # Look for fur/pattern textures and animal-like color patterns
-        if _has_animal_characteristics(img_array):
-            detected.add("animals")
-        
-        return sorted(list(detected))
-        
+
+        # Compute shared features once
+        h, w = img_array.shape[:2]
+        total_pixels = h * w
+        gray = np.mean(img_array, axis=2).astype(np.uint8) if len(img_array.shape) == 3 else img_array
+
+        # Get confidence scores for each category
+        text_score = _score_text(img_array, gray, ocr_text)
+        people_score = _score_people(img_array, h, w, total_pixels)
+        nature_score = _score_nature(img_array, total_pixels)
+        animal_score = _score_animals(img_array, gray, total_pixels)
+
+        # If image is strongly text/document, reduce confidence in others (avoid doc with a plant = nature)
+        if text_score >= 0.7:
+            nature_score *= 0.5
+            people_score *= 0.6
+            animal_score *= 0.5
+
+        detected = []
+        if text_score >= CONFIDENCE_THRESHOLD:
+            detected.append("text-heavy")
+        if people_score >= CONFIDENCE_THRESHOLD:
+            detected.append("people")
+        if nature_score >= CONFIDENCE_THRESHOLD:
+            detected.append("nature")
+        if animal_score >= CONFIDENCE_THRESHOLD:
+            detected.append("animals")
+
+        return sorted(detected)
+
     except Exception as e:
         print(f"Error detecting objects in {image_path}: {e}")
         return []
 
 
-def _has_text_pattern(img_array: np.ndarray) -> bool:
+def _score_text(img_array: np.ndarray, gray: np.ndarray, ocr_text: str) -> float:
     """
-    Detect if image has visual patterns typical of text.
-    
-    Text images have:
-    - High contrast regions (black text on white background)
-    - Horizontal line patterns
-    - Low color variance (mostly black/white)
+    Score how much the image looks like text/document content.
+    Uses bimodal intensity, edge density, and OCR length.
     """
-    # Convert to grayscale
-    if len(img_array.shape) == 3:
-        gray = np.mean(img_array, axis=2).astype(np.uint8)
-    else:
-        gray = img_array
-    
     h, w = gray.shape
-    
-    # Check for high contrast (bimodal distribution)
-    # Text tends to cluster around black (0-50) and white (200-255)
-    dark_pixels = np.sum(gray < 80)
-    light_pixels = np.sum(gray > 180)
-    mid_pixels = np.sum((gray >= 80) & (gray <= 180))
-    
     total = h * w
+
+    # Bimodal: text has dark (ink) and light (paper) peaks, few mid-tones
+    dark_pixels = np.sum(gray < 70)
+    light_pixels = np.sum(gray > 185)
+    mid_pixels = np.sum((gray >= 70) & (gray <= 185))
+
     dark_ratio = dark_pixels / total
     light_ratio = light_pixels / total
     mid_ratio = mid_pixels / total
-    
-    # Text has high dark + light, low mid (bimodal)
-    if dark_ratio > 0.1 and light_ratio > 0.4 and mid_ratio < 0.4:
-        return True
-    
-    # Check for horizontal line patterns (text lines)
-    row_variances = np.var(gray, axis=1)
-    # Text lines have alternating high/low variance rows
-    variance_changes = np.sum(np.abs(np.diff(row_variances)) > 200)
-    if variance_changes > h * 0.3:  # Many variance changes = likely text lines
-        return True
-    
-    return False
+
+    # Strong bimodal: high dark + high light, low mid
+    bimodal_strength = 0.0
+    if mid_ratio < 0.5 and (dark_ratio + light_ratio) > 0.5:
+        bimodal_strength = (1.0 - mid_ratio) * (dark_ratio + light_ratio)
+    bimodal_strength = min(1.0, bimodal_strength * 1.2)
+
+    # Row variance: text has repeated line structure
+    row_vars = np.var(gray, axis=1)
+    variance_changes = np.sum(np.abs(np.diff(row_vars)) > 150)
+    line_structure = min(1.0, variance_changes / max(1, h * 0.25)) if h > 1 else 0.0
+
+    # OCR is strong evidence
+    ocr_score = 0.0
+    if ocr_text and len(ocr_text.strip()) > 80:
+        ocr_score = min(1.0, len(ocr_text) / 500)  # cap at 500 chars
+    elif ocr_text and len(ocr_text.strip()) > 20:
+        ocr_score = 0.4
+
+    # Combine: require either strong OCR or (bimodal + some line structure)
+    if ocr_score >= 0.5:
+        return 0.5 + ocr_score * 0.5
+    visual = bimodal_strength * 0.7 + line_structure * 0.3
+    if visual > 0.6 and mid_ratio < 0.45:
+        return visual
+    return ocr_score * 0.6 + visual * 0.4
 
 
-def _has_skin_tones(img_array: np.ndarray) -> bool:
+def _score_people(img_array: np.ndarray, h: int, w: int, total_pixels: int) -> float:
     """
-    Detect presence of human skin tones.
-    
-    Skin tones have specific RGB characteristics:
-    - R > G > B (red channel dominant)
-    - Moderate saturation
-    - Specific hue range
+    Score likelihood of people using skin tone detection in YCbCr and spatial clustering.
     """
-    # Sample pixels for performance
-    h, w = img_array.shape[:2]
-    total_pixels = h * w
-    
-    if total_pixels > 5000:
+    # YCbCr is more reliable for skin than RGB (avoids brown objects)
+    # Skin in YCbCr: Cr in [133, 173], Cb in [77, 127], Y for brightness
+    r, g, b = img_array[:, :, 0], img_array[:, :, 1], img_array[:, :, 2]
+    y = (0.299 * r + 0.587 * g + 0.114 * b).astype(np.float32)
+    cb = (128 - 0.169 * r - 0.331 * g + 0.5 * b).astype(np.float32)
+    cr = (128 + 0.5 * r - 0.419 * g - 0.081 * b).astype(np.float32)
+
+    # Skin mask: standard YCbCr ranges for skin
+    skin_mask = (
+        (cr >= 133) & (cr <= 173) &
+        (cb >= 77) & (cb <= 127) &
+        (y >= 60) & (y <= 250)
+    )
+
+    skin_ratio = np.sum(skin_mask) / total_pixels
+
+    # Require spatial clustering: at least one block (e.g. 1/4 of image) has notable skin
+    block_h, block_w = max(1, h // 4), max(1, w // 4)
+    max_block_ratio = 0.0
+    for i in range(0, h - block_h + 1, block_h):
+        for j in range(0, w - block_w + 1, block_w):
+            block = skin_mask[i : i + block_h, j : j + block_w]
+            max_block_ratio = max(max_block_ratio, np.sum(block) / block.size)
+
+    # Score: need both global presence and at least one cluster (face/arm region)
+    if skin_ratio < 0.03:
+        return 0.0
+    if max_block_ratio < 0.08:
+        return skin_ratio * 2.0  # weak: scattered skin-colored pixels only
+    # Strong: clustered skin (likely face/hand)
+    return min(1.0, 0.3 + skin_ratio * 4.0 + max_block_ratio * 1.5)
+
+
+def _score_nature(img_array: np.ndarray, total_pixels: int) -> float:
+    """
+    Score natural/outdoor content: green (plants), sky blue, earth tones.
+    """
+    if total_pixels > 8000:
         flat = img_array.reshape(-1, 3)
-        sample_indices = np.random.choice(len(flat), 5000, replace=False)
-        pixels = flat[sample_indices]
+        idx = np.random.choice(len(flat), 8000, replace=False)
+        pixels = flat[idx]
     else:
         pixels = img_array.reshape(-1, 3)
-    
-    skin_pixels = 0
-    
-    for pixel in pixels:
-        r, g, b = pixel
-        
-        # Skin tone characteristics
-        # R > G > B pattern
-        if not (r > g > b):
-            continue
-        
-        # R-G and R-B differences in specific ranges
-        if not (20 < r - g < 100):
-            continue
-        if not (30 < r - b < 150):
-            continue
-        
-        # Brightness range (not too dark, not too bright)
-        brightness = (int(r) + int(g) + int(b)) / 3
-        if not (50 < brightness < 230):
-            continue
-        
-        skin_pixels += 1
-    
-    # If >5% of sampled pixels are skin-toned, likely contains people
-    skin_ratio = skin_pixels / len(pixels)
-    return skin_ratio > 0.05
+
+    n = len(pixels)
+    r, g, b = pixels[:, 0], pixels[:, 1], pixels[:, 2]
+
+    # Green-dominant (plants, grass) – require clear green
+    green_strong = (g > r) & (g > b) & (g > 90) & (g - r > 15)
+    green_ratio = np.sum(green_strong) / n
+
+    # Sky blue – but not UI blue (sky often has some green)
+    blue_sky = (b > r) & (b > g) & (b > 100) & (b - g < 80)
+    blue_ratio = np.sum(blue_sky) / n
+
+    # Earth/brown
+    brown = (r > 60) & (r < 160) & (g > 40) & (g < 130) & (b > 20) & (b < 90) & (r > g) & (g > b)
+    brown_ratio = np.sum(brown) / n
+
+    # Avoid false positive: mostly blue (e.g. screenshot/UI) with no green
+    if blue_ratio > 0.35 and green_ratio < 0.08:
+        return 0.0
+
+    # Nature: dominant green, or outdoor (green + blue + brown)
+    if green_ratio > 0.28:
+        return min(1.0, 0.5 + green_ratio)
+    if green_ratio > 0.18 and (blue_ratio > 0.12 or brown_ratio > 0.12):
+        return 0.4 + green_ratio + (blue_ratio + brown_ratio) * 0.5
+    if green_ratio > 0.12 and blue_ratio > 0.15 and brown_ratio > 0.08:
+        return 0.35 + green_ratio + blue_ratio
+    return green_ratio * 2.0 if green_ratio > 0.10 else 0.0
 
 
-def _has_nature_characteristics(img_array: np.ndarray) -> bool:
+def _score_animals(img_array: np.ndarray, gray: np.ndarray, total_pixels: int) -> float:
     """
-    Detect natural scenes (plants, flowers, outdoor).
-    
-    Nature images have:
-    - Dominant green (plants)
-    - High color variance (organic, not uniform)
-    - Specific color distributions (earth tones, sky blues, plant greens)
+    Score animal presence: fur-like texture + animal-like colors (brown, black, white, orange).
     """
-    h, w = img_array.shape[:2]
-    total_pixels = h * w
-    
-    # Sample for performance
-    if total_pixels > 5000:
-        flat = img_array.reshape(-1, 3)
-        sample_indices = np.random.choice(len(flat), 5000, replace=False)
-        pixels = flat[sample_indices]
-    else:
-        pixels = img_array.reshape(-1, 3)
-    
-    # Count green-dominant pixels (plants/grass)
-    green_pixels = 0
-    blue_pixels = 0  # Sky
-    brown_pixels = 0  # Earth/wood
-    
-    for pixel in pixels:
-        r, g, b = pixel
-        
-        # Green-dominant (plants)
-        if g > r and g > b and g > 80:
-            green_pixels += 1
-        
-        # Blue-dominant (sky/water)
-        if b > r and b > g and b > 100:
-            blue_pixels += 1
-        
-        # Brown/earth tones
-        if 60 < r < 150 and 40 < g < 120 and 20 < b < 80:
-            if r > g > b:
-                brown_pixels += 1
-    
-    total_sampled = len(pixels)
-    green_ratio = green_pixels / total_sampled
-    blue_ratio = blue_pixels / total_sampled
-    brown_ratio = brown_pixels / total_sampled
-    
-    # Nature typically has significant green OR (blue + brown/green)
-    if green_ratio > 0.25:  # Lots of plants
-        return True
-    
-    if blue_ratio > 0.20 and (green_ratio > 0.10 or brown_ratio > 0.10):
-        # Sky + plants/earth = outdoor scene
-        return True
-    
-    # Check for organic color variance (not uniform like graphics)
-    color_variance = np.var(pixels, axis=0).mean()
-    if green_ratio > 0.15 and color_variance > 1000:
-        # Moderate green + high variance = natural scene
-        return True
-    
-    return False
-
-
-def _has_animal_characteristics(img_array: np.ndarray) -> bool:
-    """
-    Detect likely presence of animals.
-    
-    Animals have:
-    - Fur/feather textures (specific patterns)
-    - Brown/tan colors common
-    - Moderate texture variance
-    """
-    # Convert to grayscale for texture analysis
-    if len(img_array.shape) == 3:
-        gray = np.mean(img_array, axis=2).astype(np.uint8)
-    else:
-        gray = img_array
-    
-    # Resize for performance
-    small = Image.fromarray(gray).resize((100, 100), Image.Resampling.LANCZOS)
-    small_array = np.array(small)
-    
-    # Analyze texture patterns
-    # Fur has medium-frequency patterns (not smooth, not too chaotic)
-    # Use local standard deviation as texture measure
-    texture_scores = []
-    
-    h, w = small_array.shape
+    # Texture on a downscaled patch
+    small = np.array(
+        Image.fromarray(gray).resize((120, 120), Image.Resampling.LANCZOS)
+    )
+    h, w = small.shape
     window_size = 5
-    
-    for i in range(window_size, h - window_size, 2):
-        for j in range(window_size, w - window_size, 2):
-            window = small_array[i-window_size:i+window_size, 
-                                j-window_size:j+window_size]
+    texture_scores = []
+    for i in range(window_size, h - window_size, 3):
+        for j in range(window_size, w - window_size, 3):
+            window = small[i - window_size : i + window_size, j - window_size : j + window_size]
             texture_scores.append(np.std(window))
-    
+
     if not texture_scores:
-        return False
-    
+        return 0.0
+
     avg_texture = np.mean(texture_scores)
-    
-    # Fur texture has moderate std (15-50 range typically)
-    # Too low = smooth/uniform, too high = noisy/chaotic
-    has_fur_texture = 15 < avg_texture < 50
-    
-    # Check for animal colors (browns, tans, blacks, whites)
-    h, w = img_array.shape[:2]
-    total_pixels = h * w
-    
-    if total_pixels > 5000:
+    # Fur: moderate texture (narrower band to avoid grass/fabric)
+    fur_texture = 0.0
+    if 18 < avg_texture < 48:
+        fur_texture = 1.0 - abs(avg_texture - 33) / 20.0
+        fur_texture = max(0.0, fur_texture)
+
+    # Animal-like colors
+    if total_pixels > 8000:
         flat = img_array.reshape(-1, 3)
-        sample_indices = np.random.choice(len(flat), 5000, replace=False)
-        pixels = flat[sample_indices]
+        idx = np.random.choice(len(flat), 8000, replace=False)
+        pixels = flat[idx]
     else:
         pixels = img_array.reshape(-1, 3)
-    
-    animal_color_pixels = 0
-    
-    for pixel in pixels:
-        r, g, b = pixel
-        
-        # Brown/tan (common for many animals)
-        if 80 < r < 180 and 60 < g < 140 and 30 < b < 100:
-            if r > g > b:
-                animal_color_pixels += 1
-        
-        # Black fur
-        if max(r, g, b) < 60:
-            animal_color_pixels += 1
-        
-        # White fur
-        if min(r, g, b) > 200:
-            animal_color_pixels += 1
-        
-        # Orange/ginger (cats, foxes)
-        if r > 180 and 80 < g < 150 and b < 80:
-            animal_color_pixels += 1
-    
-    animal_color_ratio = animal_color_pixels / len(pixels)
-    
-    # Combine texture and color signals
-    # Need both fur texture AND animal colors
-    if has_fur_texture and animal_color_ratio > 0.3:
-        return True
-    
-    return False
+
+    r, g, b = pixels[:, 0], pixels[:, 1], pixels[:, 2]
+
+    brown_tan = (r > 85) & (r < 175) & (g > 55) & (g < 135) & (b > 25) & (b < 95) & (r > g) & (g > b)
+    black_fur = (np.maximum(np.maximum(r, g), b) < 55)
+    white_fur = (np.minimum(np.minimum(r, g), b) > 198)
+    orange_ginger = (r > 175) & (g > 75) & (g < 145) & (b < 85)
+
+    animal_pixels = np.sum(brown_tan | black_fur | white_fur | orange_ginger)
+    color_ratio = animal_pixels / len(pixels)
+
+    # Need both texture and color; avoid flagging documents (high black/white from text)
+    dark_light_doc = np.sum((r < 60) | (r > 240)) / len(pixels)
+    if dark_light_doc > 0.6:
+        color_ratio *= 0.4  # likely document
+
+    combined = fur_texture * 0.55 + min(1.0, color_ratio * 2.0) * 0.45
+    return combined
 
 
 def get_object_hints(image_metadata: dict) -> List[str]:
     """
-    Helper function to get object hints from existing metadata.
-    
-    This can be called by the search system to get object tags
-    without re-processing the image.
-    
-    Args:
-        image_metadata: Metadata dict containing 'objects' key
-        
-    Returns:
-        List of object tags
+    Helper to get object hints from existing metadata.
     """
-    return image_metadata.get('objects', [])
+    return image_metadata.get("objects", [])
