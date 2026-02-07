@@ -372,7 +372,7 @@ def get_processor(metadata_path: str = "metadata.json") -> ImageProcessor:
 # Flask app.py, which expects standalone functions rather than the class-based
 # ImageProcessor approach.
 
-def process_image(filepath: str, filename: str = None) -> Dict[str, Any]:
+def process_image(filepath: str, filename: str = None, defer_ocr: bool = False) -> Dict[str, Any]:
     """
     Flask-compatible wrapper for image processing.
     
@@ -383,10 +383,12 @@ def process_image(filepath: str, filename: str = None) -> Dict[str, Any]:
     - image_type: str (single primary type)
     - keywords: list[str]
     - metadata: dict
+    - ocr_status: str (optional) - "pending" | "done" | "skipped"
     
     Args:
         filepath: Path to the image file (relative or absolute; normalized to absolute)
         filename: Original filename (optional, for display purposes)
+        defer_ocr: If True, skip synchronous OCR for text-heavy images; caller runs OCR in background.
         
     Returns:
         Dictionary with OCR text, colors, type, keywords, and metadata
@@ -425,14 +427,23 @@ def process_image(filepath: str, filename: str = None) -> Dict[str, Any]:
         # --- OCR: only run for text-heavy images (saves time on normal photos) ---
         # is_text_heavy uses image_type + tags + objects to decide if OCR is worthwhile.
         # Skipping OCR for photos/selfies improves processing speed significantly.
+        # When defer_ocr=True, skip sync OCR and return ocr_status="pending" for background processing.
         pre_keywords = list(set((tags[1:] if len(tags) > 1 else []) + objects_list))
-        if vision.is_text_heavy(image_type, pre_keywords):
-            try:
-                ocr_text = extract_text(filepath)
-                # Re-run object detection with OCR text for better "text-heavy" hint
-                objects_list = objects.detect_objects(filepath, ocr_text)
-            except Exception as e:
-                print(f"OCR failed for {filepath}: {e}")
+        is_text_heavy = vision.is_text_heavy(image_type, pre_keywords)
+        ocr_status = "skipped"  # Non-text-heavy images skip OCR
+        if is_text_heavy:
+            if defer_ocr:
+                ocr_text = ""  # Background OCR will populate this later
+                ocr_status = "pending"
+            else:
+                try:
+                    ocr_text = extract_text(filepath)
+                    ocr_status = "done"
+                    # Re-run object detection with OCR text for better "text-heavy" hint
+                    objects_list = objects.detect_objects(filepath, ocr_text)
+                except Exception as e:
+                    print(f"OCR failed for {filepath}: {e}")
+                    ocr_status = "failed"
         else:
             ocr_text = ""
 
@@ -457,6 +468,7 @@ def process_image(filepath: str, filename: str = None) -> Dict[str, Any]:
             "image_type": image_type,
             "keywords": keywords,
             "metadata": img_metadata,
+            "ocr_status": ocr_status,
         }
     except Exception as e:
         print(f"Error processing image {filepath}: {e}")
@@ -466,7 +478,12 @@ def process_image(filepath: str, filename: str = None) -> Dict[str, Any]:
             "image_type": image_type,
             "keywords": keywords,
             "metadata": img_metadata or {},
+            "ocr_status": "failed",
         }
+
+# NOTE:
+# process_image() MUST NOT start threads.
+# Background OCR lifecycle is owned by app.py.
 
 
 def extract_text(filepath: str) -> str:

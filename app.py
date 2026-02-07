@@ -6,9 +6,15 @@ Flask backend with AI-powered image processing and search
 from flask import Flask, render_template, request, jsonify, send_from_directory
 import json
 import os
+import threading
 import uuid
 from datetime import datetime
 from werkzeug.utils import secure_filename
+
+OCR_SEMAPHORE = threading.Semaphore(1)  # only ONE OCR at a time
+
+# Lock for thread-safe metadata updates when background OCR completes
+_metadata_lock = threading.Lock()
 
 # Import AI modules
 from ai.processor import process_image
@@ -50,6 +56,38 @@ def save_metadata(data):
     """Save metadata to JSON file"""
     with open(METADATA_FILE, 'w') as f:
         json.dump(data, f, indent=2)
+
+
+def _update_image_ocr_in_metadata(image_id: str, ocr_text: str, ocr_status: str):
+    """
+    Thread-safe update of OCR text and status for a single image in metadata.
+    Called by background OCR thread when OCR completes.
+    """
+    with _metadata_lock:
+        metadata = load_metadata()
+        for img in metadata.get('images', []):
+            if img.get('id') == image_id:
+                img['ocr_text'] = ocr_text
+                img['ocr_status'] = ocr_status
+                break
+        save_metadata(metadata)
+
+
+def _run_background_ocr(filepath: str, image_id: str):
+    """
+    Fire-and-forget background OCR worker.
+    Uses existing ai/ocr.extract_text(). Updates metadata when done.
+    """
+    with OCR_SEMAPHORE:
+        try:
+            print(f"[OCR] Background OCR started for {image_id}")
+            from ai.ocr import extract_text
+            text = extract_text(filepath, preserve_case=False)
+            _update_image_ocr_in_metadata(image_id, text, 'done')
+            print(f"[OCR] Background OCR finished for {image_id}")
+        except Exception as e:
+            print(f"Background OCR failed for {image_id}: {e}")
+            _update_image_ocr_in_metadata(image_id, '', 'failed')
 
 
 def calculate_relevance(image_data, query_terms):
@@ -145,9 +183,10 @@ def upload_images():
                 file.save(filepath)
 
                 # Process with AI (filepath is absolute for consistent resolution)
-                analysis = process_image(filepath, original_filename)
+                # defer_ocr=True: OCR runs in background thread after upload completes
+                analysis = process_image(filepath, original_filename, defer_ocr=True)
 
-                # Create image record
+                # Create image record (ocr_status: pending|done|skipped|failed)
                 image_record = {
                     'id': uuid.uuid4().hex,
                     'filename': unique_filename,
@@ -157,10 +196,18 @@ def upload_images():
                     'colors': analysis['colors'],
                     'image_type': analysis['image_type'],
                     'keywords': analysis['keywords'],
-                    'metadata': analysis['metadata']
+                    'metadata': analysis['metadata'],
+                    'ocr_status': analysis.get('ocr_status', 'done'),
                 }
 
                 metadata['images'].append(image_record)
+                save_metadata(metadata)   # ✅ flush FIRST
+
+                # Background OCR: fire-and-forget thread for text-heavy images
+                if analysis.get('ocr_status') == 'pending':
+                    t = threading.Thread(target=_run_background_ocr, args=(filepath, image_record['id']))
+                    t.daemon = True
+                    t.start()
                 uploaded.append({
                     'id': image_record['id'],
                     'filename': unique_filename,

@@ -1,41 +1,60 @@
 """
 OCR Module - Extract text from images using EasyOCR
 Handles screenshots, documents, bills, and any text-containing images
-Optimized for web app usage with caching and batch processing
-"""
+Optimized for web app usage with caching and batch processing.
 
+Singleton: EasyOCR reader is created exactly once per process and reused by all
+OCR calls (including background threads). A lock ensures no double initialization.
+"""
+from PIL import Image
+import tempfile
+import os
 import easyocr
-from typing import Dict, List, Tuple, Optional
-from pathlib import Path
 import logging
+import threading
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize reader once (important for performance)
-# Consider lazy loading if memory is a concern
-_reader = None
+# Module-level singleton: one EasyOCR reader per process
+_reader = easyocr.Reader(
+    ["en"],
+    gpu=False,
+    verbose=False,
+    recog_network='latin_g2',   # lighter
+)
+
+# Lock so only one thread can perform initialization (prevents multiple Reader() calls)
+_reader_lock = threading.Lock()
 
 
 def get_reader() -> easyocr.Reader:
     """
-    Lazy-load the EasyOCR reader for better memory management.
-
-    Returns:
-        Initialized EasyOCR reader instance
+    Return the single EasyOCR reader instance, creating it once on first use.
+    Thread-safe: easyocr.Reader() is called only once per process even under
+    concurrent uploads or background OCR threads.
     """
     global _reader
-    if _reader is None:
-        logger.info("Initializing EasyOCR reader...")
-        _reader = easyocr.Reader(['en'], gpu=False, verbose=False)
-        logger.info("EasyOCR reader initialized successfully")
+    if _reader is not None:
+        return _reader
+    with _reader_lock:
+        # Double-check: another thread may have initialized while we waited
+        if _reader is None:
+            logger.info("Initializing EasyOCR reader...")
+            _reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+            logger.info("EasyOCR reader initialized successfully")
     return _reader
 
 
 def extract_text(image_path: str, preserve_case: bool = False) -> str:
     """
     Extract all readable text from an image using EasyOCR.
+
+    Skips OCR when the image has zero text likelihood (not document and not
+    text-heavy by vision heuristic), avoiding unnecessary reader load and CPU.
 
     Args:
         image_path: Path to the image file
@@ -48,14 +67,40 @@ def extract_text(image_path: str, preserve_case: bool = False) -> str:
         FileNotFoundError: If image file doesn't exist
         ValueError: If image file is invalid or corrupted
     """
-    # Validate file exists
     if not Path(image_path).exists():
         logger.error(f"Image file not found: {image_path}")
         raise FileNotFoundError(f"Image file not found: {image_path}")
 
+    # Guard: skip OCR when image has zero text likelihood (saves CPU/RAM)
+    try:
+        from . import vision
+        tags = vision.classify_image(image_path)
+        image_type = (tags[0] if tags else "photo").lower()
+        keywords = list(tags[1:]) if len(tags) > 1 else []
+        text_heavy = vision.is_text_heavy(image_type, keywords)
+        if image_type != "document" and not text_heavy:
+            logger.info(f"Skipping OCR for low-text-likelihood image: {image_path} (type={image_type})")
+            return ""
+    except Exception as e:
+        logger.warning(f"Text-likelihood check failed, running OCR anyway: {e}")
+
     try:
         reader = get_reader()
-        results = reader.readtext(image_path)
+        with Image.open(image_path) as img:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+
+            img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                temp_path = tmp.name
+                img.save(temp_path, format="JPEG", quality=85)
+
+        try:
+            results = reader.readtext(temp_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
         # Extract text from results
         text = " ".join([res[1] for res in results])
