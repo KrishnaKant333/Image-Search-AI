@@ -9,6 +9,9 @@ import os
 import uuid
 from datetime import datetime
 from werkzeug.utils import secure_filename
+# ========== 🔵 CHANGE #1: Import hashlib for duplicate detection 🔵 ==========
+import hashlib
+# ========== 🔵 END CHANGE #1 🔵 ==========
 
 # Import AI modules (foreground-only for fast response; OCR runs in single-worker queue)
 from ai.processor import process_image_foreground_only, run_ocr_background, metadata_lock
@@ -33,6 +36,36 @@ def allowed_file(filename):
     """Check if file extension is allowed"""
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+# ========== 🔵 CHANGE #2: Add function to calculate file hash for duplicate detection 🔵 ==========
+def calculate_file_hash(file_content):
+    """
+    Calculate SHA256 hash of file content for duplicate detection.
+    Args:
+        file_content: Binary file content
+    Returns:
+        str: Hexadecimal hash string
+    """
+    hash_sha256 = hashlib.sha256()
+    hash_sha256.update(file_content)
+    return hash_sha256.hexdigest()
+
+
+def find_duplicate_image(file_hash, metadata):
+    """
+    Check if an image with the same hash already exists.
+    Args:
+        file_hash: SHA256 hash of the file
+        metadata: Current metadata dictionary
+    Returns:
+        dict or None: Duplicate image record if found, None otherwise
+    """
+    for img in metadata.get('images', []):
+        if img.get('file_hash') == file_hash:
+            return img
+    return None
+# ========== 🔵 END CHANGE #2 🔵 ==========
 
 
 def load_metadata():
@@ -132,12 +165,35 @@ def upload_images():
     metadata = load_metadata()
     uploaded = []
     errors = []
+    # ========== 🔵 CHANGE #3: Add duplicates tracking 🔵 ==========
+    duplicates = []
+    # ========== 🔵 END CHANGE #3 🔵 ==========
     ocr_jobs = []  # Collect (filepath, image_id) to start AFTER metadata is saved
 
     for file in files:
         if file and allowed_file(file.filename):
-            # Generate unique filename
+            # ========== 🔵 CHANGE #4: Read file content and calculate hash 🔵 ==========
             original_filename = secure_filename(file.filename)
+            
+            # Read file content for hash calculation
+            file_content = file.read()
+            file_hash = calculate_file_hash(file_content)
+            
+            # Check for duplicate
+            duplicate_img = find_duplicate_image(file_hash, metadata)
+            if duplicate_img:
+                duplicates.append({
+                    'filename': original_filename,
+                    'duplicate_of': duplicate_img['original_filename'],
+                    'reason': 'Identical file already exists'
+                })
+                continue  # Skip this file
+            
+            # Reset file pointer after reading
+            file.seek(0)
+            # ========== 🔵 END CHANGE #4 🔵 ==========
+
+            # Generate unique filename
             ext = original_filename.rsplit('.', 1)[1].lower()
             unique_filename = f"{uuid.uuid4().hex}.{ext}"
 
@@ -151,11 +207,13 @@ def upload_images():
                 # Foreground only: vision, color, object detection (no OCR). Return immediately.
                 analysis = process_image_foreground_only(filepath, original_filename)
 
+                # ========== 🔵 CHANGE #5: Add file_hash to image record 🔵 ==========
                 # Create image record with ocr_status="pending"; OCR runs in background
                 image_record = {
                     'id': uuid.uuid4().hex,
                     'filename': unique_filename,
                     'original_filename': original_filename,
+                    'file_hash': file_hash,  # NEW: Store hash for duplicate detection
                     'uploaded_at': datetime.now().isoformat(),
                     'ocr_text': analysis.get('ocr_text', ''),
                     'ocr_status': analysis.get('ocr_status', 'pending'),
@@ -165,6 +223,7 @@ def upload_images():
                     'keywords': analysis['keywords'],
                     'metadata': analysis['metadata']
                 }
+                # ========== 🔵 END CHANGE #5 🔵 ==========
 
                 metadata['images'].append(image_record)
                 uploaded.append({
@@ -187,11 +246,14 @@ def upload_images():
     for filepath, image_id in ocr_jobs:
         run_ocr_background(filepath, image_id, metadata_abs)
 
+    # ========== 🔵 CHANGE #6: Return duplicates info in response 🔵 ==========
     return jsonify({
         'uploaded': uploaded,
         'errors': errors,
+        'duplicates': duplicates,  # NEW: List of skipped duplicate files
         'total_images': len(metadata['images'])
     })
+    # ========== 🔵 END CHANGE #6 🔵 ==========
 
 
 @app.route('/api/search', methods=['GET'])
@@ -354,4 +416,3 @@ if __name__ == '__main__':
         save_metadata({'images': []})
 
     app.run(host='0.0.0.0', port=5000, debug=False)
-	

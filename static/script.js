@@ -188,14 +188,23 @@ async function searchImages(query = '') {
 
         const result = await response.json();
 
+        // ========== 🔵 CHANGE #1: LIMIT TO TOP 10 SEARCH RESULTS 🔵 ==========
         // Update UI
         if (query) {
             resultsTitle.textContent = `Results for "${query}"`;
-            currentImages = result.results || [];
+            // Limit search results to top 10 most relevant
+            const allResults = result.results || [];
+            currentImages = allResults.slice(0, 10);
+            
+            // Show notification if more results were found
+            if (allResults.length > 10) {
+                showToast(`Showing top 10 of ${allResults.length} results`, 'info');
+            }
         } else {
             resultsTitle.textContent = 'Your Images';
             currentImages = result.images || [];
         }
+        // ========== 🔵 END CHANGE #1 🔵 ==========
 
         resultsCount.textContent = `${currentImages.length} image(s)`;
         renderImages(currentImages, !!query);

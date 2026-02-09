@@ -297,12 +297,38 @@ body {
     font-size: 0.9rem;
 }
 
+/* ========== 🔵 CHANGE #2: ADD SCROLLABLE CONTAINER FOR RESULTS GRID 🔵 ========== */
 .results-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
     gap: 16px;
     min-height: 200px;
+    /* Added: Max height with scroll */
+    max-height: 600px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 8px; /* Space for scrollbar */
 }
+
+/* Custom scrollbar styling for results grid */
+.results-grid::-webkit-scrollbar {
+    width: 8px;
+}
+
+.results-grid::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+    border-radius: 4px;
+}
+
+.results-grid::-webkit-scrollbar-thumb {
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+}
+
+.results-grid::-webkit-scrollbar-thumb:hover {
+    background: var(--bg-hover);
+}
+/* ========== 🔵 END CHANGE #2 🔵 ========== */
 
 /* Empty State */
 .empty-state {
