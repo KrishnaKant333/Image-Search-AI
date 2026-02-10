@@ -379,6 +379,38 @@ def ocr_progress():
     metadata = load_metadata()
     images = metadata.get('images', [])
 
+    # Auto-timeout: mark very old pending/running jobs as failed so progress
+    # does not get stuck forever if OCR hangs or the process was interrupted.
+    # This is a backend concern only; frontend and APIs stay the same.
+    STUCK_MINUTES = 10
+    now = datetime.now()
+    touched = False
+
+    for img in images:
+        status = (img.get('ocr_status') or '').lower()
+        if status not in ('pending', 'running'):
+            continue
+
+        uploaded_at_str = img.get('uploaded_at')
+        if not uploaded_at_str:
+            continue
+
+        try:
+            uploaded_at = datetime.fromisoformat(uploaded_at_str)
+        except Exception:
+            continue
+
+        age_minutes = (now - uploaded_at).total_seconds() / 60.0
+        if age_minutes >= STUCK_MINUTES:
+            img['ocr_status'] = 'failed'
+            # Do not trust partial text/keywords if job is considered failed
+            img['ocr_text'] = ''
+            img['ocr_keywords'] = []
+            touched = True
+
+    if touched:
+        save_metadata(metadata)
+
     total_jobs = 0
     completed_jobs = 0
     running_jobs = 0

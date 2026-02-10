@@ -58,6 +58,15 @@ async function fetchOcrProgress() {
         const total = data.total || 0;
         const completed = data.completed || 0;
 
+        // New OCR work detected: clear reload guard so we can reload once per cycle
+        if (total && completed < total) {
+            try {
+                sessionStorage.removeItem('ocrReloadedOnce');
+            } catch (e) {
+                // Ignore storage issues
+            }
+        }
+
         if (!total || completed >= total) {
             ocrProgressContainer.style.display = 'none';
             if (ocrProgressTimer) {
@@ -69,6 +78,19 @@ async function fetchOcrProgress() {
                 updateStageStatus(ocrStatus, 'completed', total ? `✓ ${completed} processed` : 'Idle');
             }
             lastOcrCompleted = completed || 0;
+
+            // When OCR is fully complete, trigger a one-time full page reload
+            if (total && completed >= total) {
+                try {
+                    const already = sessionStorage.getItem('ocrReloadedOnce');
+                    if (!already) {
+                        sessionStorage.setItem('ocrReloadedOnce', 'true');
+                        window.location.reload();
+                    }
+                } catch (e) {
+                    // Ignore storage issues; safest fallback is no reload loop
+                }
+            }
             return;
         }
 
@@ -414,7 +436,9 @@ async function searchImages(query = '') {
             }
         } else {
             resultsTitle.textContent = 'Your Images';
-            currentImages = result.images || [];
+            const allImages = result.images || [];
+            // Newest images should appear at the top in "Your Images"
+            currentImages = allImages.slice().reverse();
         }
         // ========== 🔵 END CHANGE #1 🔵 ==========
 
