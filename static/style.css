@@ -163,6 +163,21 @@ body {
     border: 1px solid var(--border-color);
 }
 
+/* Upload status header: text + count */
+.progress-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.progress-count {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-tertiary);
+}
+
 .progress-bar {
     height: 8px;
     background: var(--bg-tertiary);
@@ -179,10 +194,39 @@ body {
     transition: width 0.3s ease;
 }
 
-#progressText {
-    text-align: center;
-    color: var(--text-secondary);
-    font-size: 0.9rem;
+/* Extra spacing for detailed stages below the bar */
+.progress-details {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.8rem;
+}
+
+.progress-stage {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.stage-label {
+    color: var(--text-tertiary);
+}
+
+.stage-status {
+    font-weight: 500;
+}
+
+.stage-status.processing {
+    color: var(--accent-primary);
+}
+
+.stage-status.completed {
+    color: #10b981; /* green */
+}
+
+.stage-status.error {
+    color: #ef4444; /* red */
 }
 
 /* ===== Search Section ===== */
@@ -359,6 +403,13 @@ body {
     cursor: pointer;
     transition: var(--transition);
     position: relative;
+}
+
+/* While OCR is still running, show image in subtle grayscale / lower opacity */
+.image-card.ocr-pending img {
+    filter: grayscale(0.9);
+    opacity: 0.75;
+    transition: filter 0.3s ease, opacity 0.3s ease;
 }
 
 .image-card:hover {

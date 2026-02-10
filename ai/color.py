@@ -113,6 +113,32 @@ def extract_colors(image_path: str, max_colors: int = 3) -> List[str]:
         
         # Map each pixel to its closest base color
         color_counts = _map_pixels_to_base_colors(pixels)
+
+        # Post-process gray: only keep gray when no vibrant color is dominant.
+        # Gray should act as a fallback, not co-exist with clearly vibrant colors.
+        total_pixels = sum(color_counts.values())
+        if total_pixels > 0 and "gray" in color_counts:
+            vibrant_colors = {
+                "red",
+                "blue",
+                "green",
+                "yellow",
+                "orange",  # Included for completeness, even if not a base color
+                "purple",
+                "pink",
+                "brown",
+            }
+            has_dominant_vibrant = False
+            for c in vibrant_colors:
+                count = color_counts.get(c, 0)
+                # Treat a color as "meaningfully dominant" if it covers at least 20% of pixels
+                if count / total_pixels >= 0.2:
+                    has_dominant_vibrant = True
+                    break
+
+            # If any vibrant color is dominant, drop gray from the palette
+            if has_dominant_vibrant:
+                color_counts.pop("gray", None)
         
         # Sort by frequency and return top N
         sorted_colors = [color for color, count in color_counts.most_common(max_colors)]

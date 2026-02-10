@@ -162,6 +162,10 @@ def upload_images():
     if not files or files[0].filename == '':
         return jsonify({'error': 'No files selected'}), 400
 
+    # Enforce a hard limit of 50 images per upload request
+    if len(files) > 50:
+        return jsonify({'error': 'You can upload a maximum of 50 images per upload.'}), 400
+
     metadata = load_metadata()
     uploaded = []
     errors = []
@@ -363,6 +367,41 @@ def get_all_images():
             for img in images
         ],
         'total': len(images)
+    })
+
+
+@app.route('/api/ocr-progress', methods=['GET'])
+def ocr_progress():
+    """
+    Get global OCR progress across all images.
+    Returns a simple aggregate so the frontend can show a single progress indicator.
+    """
+    metadata = load_metadata()
+    images = metadata.get('images', [])
+
+    total_jobs = 0
+    completed_jobs = 0
+    running_jobs = 0
+    pending_jobs = 0
+
+    for img in images:
+        status = (img.get('ocr_status') or '').lower()
+        if not status:
+            continue
+
+        total_jobs += 1
+        if status in ('done', 'failed', 'skipped'):
+            completed_jobs += 1
+        elif status == 'running':
+            running_jobs += 1
+        elif status == 'pending':
+            pending_jobs += 1
+
+    return jsonify({
+        'total': total_jobs,
+        'completed': completed_jobs,
+        'running': running_jobs,
+        'pending': pending_jobs,
     })
 
 

@@ -57,13 +57,31 @@
 					<div class="upload-info">
 						<span>Supports: PNG, JPG, JPEG, GIF, BMP, WEBP</span>
 						<span>Max 16MB per file</span>
+						<span>Auto compressed before upload</span>
 					</div>
 				</div>
 				<div class="upload-progress" id="uploadProgress" style="display: none;">
+					<div class="progress-info">
+						<span id="progressText">Processing images...</span>
+						<span id="progressCount" class="progress-count">0/0</span>
+					</div>
 					<div class="progress-bar">
 						<div class="progress-fill" id="progressFill"></div>
 					</div>
-					<p id="progressText">Processing images...</p>
+					<div class="progress-details" id="progressDetails">
+						<div class="progress-stage">
+							<span class="stage-label">📦 Compression:</span>
+							<span class="stage-status" id="compressionStatus">Waiting...</span>
+						</div>
+						<div class="progress-stage">
+							<span class="stage-label">🔍 OCR Processing:</span>
+							<span class="stage-status" id="ocrStatus">Waiting...</span>
+						</div>
+						<div class="progress-stage">
+							<span class="stage-label">📤 Upload:</span>
+							<span class="stage-status" id="uploadStatus">Waiting...</span>
+						</div>
+					</div>
 				</div>
 			</section>
 
@@ -104,6 +122,13 @@
 						🗑️
 					  </button>
 					</div>
+				  </div>
+				  <!-- Global OCR progress (aggregated across all images) -->
+				  <div class="upload-progress" id="ocrProgressContainer" style="display: none; margin-top: 8px;">
+					<div class="progress-bar">
+						<div class="progress-fill" id="ocrProgressFill"></div>
+					</div>
+					<p id="ocrProgressText">OCR processing: 0 / 0 completed</p>
 				  </div>
 				<div class="results-grid" id="resultsGrid" data-testid="grid-results">
 					<!-- Images will be populated here -->

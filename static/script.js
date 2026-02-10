@@ -12,12 +12,20 @@ const resultsSection = document.querySelector('.results-section');
 const uploadProgress = document.getElementById('uploadProgress');
 const progressFill = document.getElementById('progressFill');
 const progressText = document.getElementById('progressText');
+const progressCount = document.getElementById('progressCount');
+const progressDetails = document.getElementById('progressDetails');
+const compressionStatus = document.getElementById('compressionStatus');
+const uploadStatus = document.getElementById('uploadStatus');
+const ocrStatus = document.getElementById('ocrStatus');
 const searchInput = document.getElementById('searchInput');
 const searchBtn = document.getElementById('searchBtn');
 const resultsGrid = document.getElementById('resultsGrid');
 const resultsTitle = document.getElementById('resultsTitle');
 const resultsCount = document.getElementById('resultsCount');
 const emptyState = document.getElementById('emptyState');
+const ocrProgressContainer = document.getElementById('ocrProgressContainer');
+const ocrProgressText = document.getElementById('ocrProgressText');
+const ocrProgressFill = document.getElementById('ocrProgressFill');
 const imageModal = document.getElementById('imageModal');
 const modalImage = document.getElementById('modalImage');
 const modalInfo = document.getElementById('modalInfo');
@@ -27,6 +35,73 @@ const toastMessage = document.getElementById('toastMessage');
 
 // ===== State =====
 let currentImages = [];
+let ocrProgressTimer = null;
+let lastOcrCompleted = 0;
+let processingState = {
+    total: 0,
+    compressed: 0,
+    uploaded: 0
+};
+
+// ===== OCR Progress Functions =====
+
+async function fetchOcrProgress() {
+    if (!ocrProgressContainer) return;
+
+    try {
+        const response = await fetch('/api/ocr-progress');
+        if (!response.ok) {
+            return;
+        }
+
+        const data = await response.json();
+        const total = data.total || 0;
+        const completed = data.completed || 0;
+
+        if (!total || completed >= total) {
+            ocrProgressContainer.style.display = 'none';
+            if (ocrProgressTimer) {
+                clearInterval(ocrProgressTimer);
+                ocrProgressTimer = null;
+            }
+            if (ocrStatus) {
+                // Global OCR queue is idle or complete
+                updateStageStatus(ocrStatus, 'completed', total ? `✓ ${completed} processed` : 'Idle');
+            }
+            lastOcrCompleted = completed || 0;
+            return;
+        }
+
+        const percent = Math.round((completed / total) * 100);
+        ocrProgressContainer.style.display = 'block';
+        if (ocrProgressText) {
+            ocrProgressText.textContent = `OCR processing: ${completed} / ${total} completed`;
+        }
+        if (ocrProgressFill) {
+            ocrProgressFill.style.width = `${percent}%`;
+        }
+        if (ocrStatus) {
+            updateStageStatus(ocrStatus, 'processing', `${completed}/${total} processing`);
+        }
+
+        // If OCR has progressed since last poll, refresh images so grayscale state updates
+        if (completed !== lastOcrCompleted) {
+            lastOcrCompleted = completed;
+            // Refresh current gallery view without full page reload
+            // (uses existing search/loadImages logic)
+            loadImages();
+        }
+    } catch (error) {
+        // Fail silently; OCR UI is non-critical
+        console.error('OCR progress error:', error);
+    }
+}
+
+function startOcrProgressPolling() {
+    if (ocrProgressTimer) return;
+    fetchOcrProgress();
+    ocrProgressTimer = setInterval(fetchOcrProgress, 3000);
+}
 
 // ===== Utility Functions =====
 
@@ -60,34 +135,104 @@ function formatFileSize(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
+/**
+ * Update progress stage status text
+ */
+function updateStageStatus(element, status, text) {
+    if (!element) return;
+    element.className = `stage-status ${status}`;
+    element.textContent = text;
+}
+
+/**
+ * Update overall upload/compression/OCR progress bar
+ */
+function updateProgress(completed, total, stage) {
+    if (!uploadProgress || !progressFill || !progressText) return;
+    if (!total || total <= 0) {
+        progressFill.style.width = '0%';
+        if (progressCount) {
+            progressCount.textContent = `0/0`;
+        }
+        return;
+    }
+
+    let percentage = Math.round((completed / total) * 100);
+
+    // Treat compression as first half, upload/OCR as second half
+    if (stage === 'compression') {
+        percentage = Math.round((completed / total) * 50);
+    } else if (stage === 'upload' || stage === 'processing') {
+        percentage = 50 + Math.round((completed / total) * 50);
+    } else if (stage === 'complete') {
+        percentage = 100;
+    }
+
+    if (percentage < 0) percentage = 0;
+    if (percentage > 100) percentage = 100;
+
+    progressFill.style.width = `${percentage}%`;
+
+    if (progressCount) {
+        progressCount.textContent = `${completed}/${total}`;
+    }
+
+    if (stage === 'compression') {
+        progressText.textContent = 'Compressing images...';
+    } else if (stage === 'upload') {
+        progressText.textContent = 'Uploading images...';
+    } else if (stage === 'processing') {
+        progressText.textContent = 'AI processing...';
+    } else if (stage === 'complete') {
+        progressText.textContent = 'Complete!';
+    }
+}
+
+// Client-side image compression (borrowed from friend's version)
 async function compressImage(file) {
-    // Skip compression for small files (keeps full quality for docs/screenshots)
-    if (file.size < 500 * 1024) return file;
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
 
-    const img = await createImageBitmap(file);
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
+        reader.onload = (e) => {
+            try {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
 
-    // OCR-friendly: keep higher resolution so text stays readable (max 2048 on longest side)
-    const MAX = 2048;
-    const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+                    const MAX = 1024; // max dimension for faster uploads
+                    const scale = Math.min(1, MAX / Math.max(img.width, img.height));
 
-    canvas.width = Math.round(img.width * scale);
-    canvas.height = Math.round(img.height * scale);
+                    canvas.width = img.width * scale;
+                    canvas.height = img.height * scale;
 
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    // High-quality JPEG (0.92) to preserve sharp text edges for OCR; 0.75 caused artifacts
-    return new Promise((resolve) => {
-        canvas.toBlob(
-            (blob) => {
-                resolve(new File([blob], file.name, {
-                    type: "image/jpeg"
-                }));
-            },
-            "image/jpeg",
-            0.92
-        );
+                    canvas.toBlob(
+                        (blob) => {
+                            if (!blob) {
+                                resolve(file); // fallback to original if compression fails
+                                return;
+                            }
+                            const compressedFile = new File([blob], file.name, {
+                                type: 'image/jpeg',
+                                lastModified: Date.now()
+                            });
+                            resolve(compressedFile);
+                        },
+                        'image/jpeg',
+                        0.75
+                    );
+                };
+                img.onerror = () => reject(new Error('Failed to load image for compression'));
+                img.src = e.target.result;
+            } catch (err) {
+                reject(err);
+            }
+        };
+
+        reader.onerror = () => reject(new Error('Failed to read file for compression'));
+        reader.readAsDataURL(file);
     });
 }
 
@@ -101,7 +246,7 @@ async function uploadFiles(files) {
     if (!files || files.length === 0) return;
 
     // Filter valid image files
-    const validFiles = Array.from(files).filter(file =>
+    let validFiles = Array.from(files).filter(file =>
         file.type.startsWith('image/')
     );
 
@@ -110,62 +255,129 @@ async function uploadFiles(files) {
         return;
     }
 
-    // Show progress
-    uploadProgress.style.display = 'block';
-    progressFill.style.width = '0%';
-    progressText.textContent = `Optimizing & processing ${validFiles.length} image(s)...`;
+    // Enforce client-side limit of 50 images per upload action
+    const MAX_FILES_PER_UPLOAD = 50;
+    if (validFiles.length > MAX_FILES_PER_UPLOAD) {
+        showToast(`You can upload a maximum of ${MAX_FILES_PER_UPLOAD} images at once. Only the first ${MAX_FILES_PER_UPLOAD} will be processed.`, 'error');
+        validFiles = validFiles.slice(0, MAX_FILES_PER_UPLOAD);
+    }
 
+    // Reset processing state
+    processingState = {
+        total: validFiles.length,
+        compressed: 0,
+        uploaded: 0
+    };
+
+    // Show progress UI
+    if (uploadProgress) {
+        uploadProgress.style.display = 'block';
+    }
+    if (progressFill) {
+        progressFill.style.width = '0%';
+    }
+    if (progressText) {
+        progressText.textContent = 'Starting...';
+    }
+    if (progressCount) {
+        progressCount.textContent = `0/${validFiles.length}`;
+    }
+
+    // Reset stage statuses
+    updateStageStatus(compressionStatus, 'waiting', 'Waiting...');
+    updateStageStatus(uploadStatus, 'waiting', 'Waiting...');
+    updateStageStatus(ocrStatus, 'waiting', 'Waiting...');
 
     try {
-        let uploadedCount = 0;
-        const total = validFiles.length;
+        updateStageStatus(compressionStatus, 'processing', 'Compressing...');
+        updateStageStatus(uploadStatus, 'waiting', 'Waiting...');
+        updateStageStatus(ocrStatus, 'waiting', 'Waiting...');
 
-        // Upload one file at a time so images render progressively (one by one)
+        let uploadedCount = 0;
+
+        // Compress → upload each image sequentially so results appear one-by-one
         for (let i = 0; i < validFiles.length; i++) {
             const file = validFiles[i];
-            const compressedFile = await compressImage(file);
-            const formData = new FormData();
-            formData.append('files', compressedFile);
 
-            progressText.textContent = `Processing ${i + 1}/${total}...`;
-            progressFill.style.width = `${Math.round(((i + 1) / total) * 100)}%`;
+            // ----- Compress this image -----
+            const compressed = await compressImage(file);
+            processingState.compressed = i + 1;
+            updateStageStatus(
+                compressionStatus,
+                'processing',
+                `${processingState.compressed}/${processingState.total}`
+            );
+            updateProgress(processingState.compressed, processingState.total, 'compression');
+
+            // ----- Upload this image (single-image batch) -----
+            const formData = new FormData();
+            formData.append('files', compressed);
+
+            updateStageStatus(uploadStatus, 'processing', `Uploading ${i + 1}/${processingState.total}...`);
 
             const response = await fetch('/api/upload', {
                 method: 'POST',
                 body: formData
             });
 
-            if (!response.ok) throw new Error('Upload failed');
+            if (!response.ok) {
+                throw new Error('Upload failed');
+            }
 
             const result = await response.json();
+
             if (result.uploaded && result.uploaded.length > 0) {
                 uploadedCount += result.uploaded.length;
-                // Refresh immediately so this image appears right away (one-by-one rendering)
-                loadImages();
+                processingState.uploaded = uploadedCount;
+
+                updateStageStatus(
+                    uploadStatus,
+                    'processing',
+                    `${processingState.uploaded}/${processingState.total} uploaded`
+                );
+                updateProgress(processingState.uploaded, processingState.total, 'upload');
+
+                // Render newly uploaded images immediately
+                await loadImages();
+
+                // Ensure OCR progress polling is active while background OCR runs
+                startOcrProgressPolling();
             }
+
             if (result.errors && result.errors.length > 0) {
                 console.error('Upload errors:', result.errors);
+                showToast(`${result.errors.length} file(s) failed to upload`, 'error');
             }
         }
 
-        progressFill.style.width = '100%';
-        if (uploadedCount > 0) {
-            showToast(`Successfully uploaded ${uploadedCount} image(s)`, 'success');
-            progressText.textContent = 'AI processing complete!';
-        }
-        if (uploadedCount < total) {
-            showToast(`${total - uploadedCount} file(s) failed to upload`, 'error');
-        }
+        updateStageStatus(compressionStatus, 'completed', `✓ ${processingState.total} compressed`);
+        updateStageStatus(uploadStatus, 'completed', `✓ ${processingState.uploaded} uploaded`);
 
+        // OCR stage text is driven by global /api/ocr-progress polling;
+        // by the time uploads complete, images are queued for OCR.
+        updateStageStatus(ocrStatus, 'processing', 'Running OCR...');
+
+        // Mark overall progress complete visually
+        updateProgress(processingState.total, processingState.total, 'complete');
+
+        if (processingState.uploaded > 0) {
+            showToast(`Successfully processed ${processingState.uploaded} image(s)`, 'success');
+        }
     } catch (error) {
         console.error('Upload error:', error);
         showToast('Upload failed. Please try again.', 'error');
+        updateStageStatus(uploadStatus, 'error', '✗ Failed');
+        updateStageStatus(ocrStatus, 'error', '✗ Failed');
     } finally {
         // Hide progress after a delay
         setTimeout(() => {
-            uploadProgress.style.display = 'none';
-            progressFill.style.width = '0%';
-        }, 1500);
+            if (uploadProgress) {
+                uploadProgress.style.display = 'none';
+            }
+            if (progressFill) {
+                progressFill.style.width = '0%';
+            }
+        }, 3000);
     }
 }
 
@@ -192,13 +404,13 @@ async function searchImages(query = '') {
         // Update UI
         if (query) {
             resultsTitle.textContent = `Results for "${query}"`;
-            // Limit search results to top 10 most relevant
+            // Limit search results to top 5 most relevant
             const allResults = result.results || [];
-            currentImages = allResults.slice(0, 10);
+            currentImages = allResults.slice(0, 5);
             
             // Show notification if more results were found
-            if (allResults.length > 10) {
-                showToast(`Showing top 10 of ${allResults.length} results`, 'info');
+            if (allResults.length > 5) {
+                showToast(`Showing top 5 of ${allResults.length} results`, 'info');
             }
         } else {
             resultsTitle.textContent = 'Your Images';
@@ -258,10 +470,12 @@ function renderImages(images, showRelevance = false) {
     // Merge visual keywords + OCR-derived (when available)
     const allKeywords = (img) => [...(img.keywords || []), ...(img.ocr_keywords || [])];
 
-    resultsGrid.innerHTML = images.map(img => `
-        <div class="image-card" data-testid="card-image-${img.id}" onclick="openImage('${img.id}')">
+    resultsGrid.innerHTML = images.map(img => {
+        const isOcrPending = img.ocr_status === 'pending' || img.ocr_status === 'running';
+
+        return `
+        <div class="image-card ${isOcrPending ? 'ocr-pending' : ''}" data-testid="card-image-${img.id}" onclick="openImage('${img.id}')">
             ${showRelevance && img.relevance ? `<span class="relevance-badge">${img.relevance} pts</span>` : ''}
-            ${(img.ocr_status === 'pending' || img.ocr_status === 'running') ? '<span class="ocr-pending-badge" title="Reading text...">OCR…</span>' : ''}
             <button class="delete-btn" onclick="event.stopPropagation(); deleteImage('${img.id}')" data-testid="button-delete-${img.id}">&times;</button>
             <img src="/uploads/${escapeHtml(img.filename)}" alt="${escapeHtml(img.original_filename)}" loading="lazy">
             <div class="image-card-info">
@@ -281,8 +495,8 @@ function renderImages(images, showRelevance = false) {
 
                 </div>
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 }
 
 // ===== Image Actions =====
@@ -301,7 +515,6 @@ function openImage(imageId) {
     modalInfo.innerHTML = `
         <div style="color: var(--text-primary); margin-bottom: 8px;">
             <strong>${escapeHtml(image.original_filename)}</strong>
-            ${(image.ocr_status === 'pending' || image.ocr_status === 'running') ? '<span class="ocr-pending-badge" style="margin-left:8px;">Reading text…</span>' : ''}
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
         ${modalKeywords.slice(0, 3).map(k =>
